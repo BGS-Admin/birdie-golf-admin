@@ -351,9 +351,10 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
         <div style={GS.hdr}><span style={{ fontSize: 11, fontWeight: 700, color: "#888" }}>TIME</span></div>
         {[1, 2, 3, 4, 5].map(b => <div key={b} style={GS.hdr}><span style={{ fontSize: 13, fontWeight: 700 }}>Bay {b}</span></div>)}
 
-        {slots.map(slot => {
-          const rendered = new Set();
-          return (
+        {(() => {
+          // One rendered Set per bay — persists across all slot rows so each booking only draws once
+          const renderedPerBay = { 1: new Set(), 2: new Set(), 3: new Set(), 4: new Set(), 5: new Set() };
+          return slots.map(slot => (
             <React.Fragment key={slot}>
               <div style={GS.timeCell}>
                 <span style={{ fontSize: 11, color: "#888", fontFamily: mono }}>{slot}</span>
@@ -363,17 +364,19 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                 const blocked = isBlocked(bay, slot);
                 const color   = getBkColor(bk);
                 const bkKey   = bk?.id;
+                const rendered = renderedPerBay[bay];
 
                 if (bk && !rendered.has(bkKey)) {
                   rendered.add(bkKey);
                   const cust  = customers.find(c => c.id === bk.customer_id);
                   const name  = cust ? cn(cust) : "Walk-in";
                   const isMem = cust?.tier && cust.tier !== "none";
-                  const h     = Math.max((bk.duration_slots || 2) * 28, 28);
+                  const slotH = 29; // px per 30-min row
+                  const h     = (bk.duration_slots || 2) * slotH - 2;
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer" }}
+                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
                         <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
@@ -387,6 +390,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                     </div>
                   );
                 }
+                // Subsequent slots occupied by the same booking — render empty cell (block is drawn above)
                 if (bk && rendered.has(bkKey)) return <div key={bay} style={GS.cell} />;
                 if (blocked) return (
                   <div key={bay} style={{ ...GS.cell, background: RED + "10" }}>
@@ -404,8 +408,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                 );
               })}
             </React.Fragment>
-          );
-        })}
+          ));
+        })()}
       </div>
 
       {/* ══════════════════════════════════════
