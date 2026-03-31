@@ -1,0 +1,728 @@
+import React, { useState, useCallback } from "react";
+import { db } from "../lib/db.js";
+import { sq } from "../lib/square.js";
+import {
+  GREEN, PURPLE, RED, ORANGE, mono, ff,
+  TC, TB, BK_C, SLOTS, DUR_MAP, DUR_LABELS, slotsToLabel,
+  toH, dateKey, fmtFull, addDays, getSlots, cn,
+  X, GS, S,
+} from "../lib/constants.jsx";
+
+/* ── helpers ── */
+function calcAmount(durSlots, date, cfg) {
+  const d = new Date(date + "T12:00:00");
+  const isWk = d.getDay() === 0 || d.getDay() === 6;
+  const hrs = durSlots * 0.5;
+  const rate = isWk ? cfg.wk : cfg.pk; // simplification; peak logic can be added
+  return hrs * rate;
+}
+
+export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, fire, reload }) {
+  const [resDate,   setResDate]   = useState(new Date());
+  const [selB,      setSelB]      = useState(null);   // booking modal state
+  const [custSearch,setCustSearch]= useState("");
+  const [custCards, setCustCards] = useState([]);     // payment methods for selected customer
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [refundModal, setRefundModal] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const closeModal = useCallback(() => {
+    setSelB(null);
+    setCustSearch("");
+    setCustCards([]);
+    setRefundModal(null);
+  }, []);
+
+  /* ── fetch cards when a customer is selected ── */
+  const loadCards = useCallback(async (custId) => {
+    setLoadingCards(true);
+    const cards = await db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`);
+    setCustCards(cards || []);
+    setLoadingCards(false);
+  }, []);
+
+  /* ── grid helpers ── */
+  const slots       = getSlots(resDate);
+  const isToday     = dateKey(resDate) === dateKey(new Date());
+  const dayBookings = bookings.filter(b => b.date === dateKey(resDate));
+
+  const getBkAt = (bay, slot) => {
+    const si = SLOTS.indexOf(slot);
+    return dayBookings.find(b => {
+      if (b.bay !== bay) return false;
+      const bsi = SLOTS.indexOf(b.start_time);
+      return bsi >= 0 && si >= bsi && si < bsi + (b.duration_slots || 2);
+    });
+  };
+
+  const getBkColor = (b) => {
+    if (!b) return null;
+    if (b.type === "lesson") return BK_C.lesson;
+    const cust = customers.find(c => c.id === b.customer_id);
+    return (cust?.tier && cust.tier !== "none") ? BK_C.bay_member : BK_C.bay_walkin;
+  };
+
+  const isBlocked = (bay, slot) => {
+    const dk = dateKey(resDate);
+    return bayBlocks.some(bl => {
+      if (!(bl.bays || []).includes(bay)) return false;
+      const from = bl.from_date || bl.from, to = bl.to_date || bl.to;
+      if (dk < from || dk > to) return false;
+      if (bl.all_day || bl.allDay) return true;
+      const tf = bl.time_from || bl.timeFrom, tt = bl.time_to || bl.timeTo;
+      if (!tf || !tt) return true;
+      const th = toH(slot);
+      return th >= toH(tf) && th < toH(tt);
+    });
+  };
+
+  /* ── credit calculation ── */
+  const getCreditInfo = (cust, durSlots) => {
+    if (!cust || !cust.tier || cust.tier === "none" || cust.tier === "starter") return null;
+    const avail = cust.bay_credits_remaining || 0;
+    const needed = durSlots * 0.5; // 0.5 credit per slot
+    const used   = Math.min(avail, needed);
+    const remain = needed - used;
+    return { avail, needed, used, remain };
+  };
+
+  /* ── open new booking from grid click ── */
+  const openNew = (bay, slot) => {
+    setSelB({
+      isNew: true,
+      type: "bay",
+      bay,
+      time: slot,
+      dur: "1h",
+      date: dateKey(resDate),
+      custId: null,
+      custObj: null,
+      cardId: null,
+      notes: "",
+    });
+    setCustCards([]);
+    setCustSearch("");
+  };
+
+  /* ── open existing booking ── */
+  const openExisting = (bk) => {
+    const cust = customers.find(c => c.id === bk.customer_id);
+    setSelB({
+      ...bk,
+      isNew: false,
+      custObj: cust || null,
+      dur: slotsToLabel(bk.duration_slots),
+      time: bk.start_time,
+      notes: bk.admin_notes || "",
+      cardId: null,
+    });
+    if (cust) loadCards(cust.id);
+    setCustSearch("");
+  };
+
+  /* ── create booking ── */
+  const createBooking = async () => {
+    if (!selB.custId && !selB.isWalkIn) return;
+    setSaving(true);
+
+    const durSlots = DUR_MAP[selB.dur] || 2;
+    const cust     = selB.custObj;
+    const creditInfo = cust ? getCreditInfo(cust, durSlots) : null;
+    const creditsUsed = creditInfo ? creditInfo.used : 0;
+
+    // Calculate charge amount
+    let amount = 0;
+    if (selB.cardId && !selB.isWalkIn) {
+      const hrs = durSlots * 0.5;
+      const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+      const isWk = d.getDay() === 0 || d.getDay() === 6;
+      const isWkday = !isWk;
+      const hour  = toH(selB.time || "9:00 AM");
+      const isPeak = isWkday && hour >= 17;
+      const rate = isPeak ? cfg.pk : cfg.op;
+      const paidHrs = creditInfo ? creditInfo.remain : hrs;
+      amount = paidHrs * rate;
+    }
+
+    // Charge card if amount > 0 and card on file
+    let sqPaymentId = null;
+    if (amount > 0 && selB.cardId && cust?.square_customer_id) {
+      const sqCard = custCards.find(c => c.id === selB.cardId);
+      if (sqCard?.square_card_id) {
+        const payment = await sq("payment.create", {
+          square_customer_id: cust.square_customer_id,
+          card_id: sqCard.square_card_id,
+          amount,
+          note: `Bay ${selB.bay} · ${selB.date || dateKey(resDate)}`,
+        });
+        sqPaymentId = payment?.payment?.id || null;
+      }
+    }
+
+    // Write booking
+    const bkData = {
+      customer_id:    selB.custId || null,
+      type:           selB.type || "bay",
+      bay:            selB.bay || 1,
+      date:           selB.date || dateKey(resDate),
+      start_time:     selB.time || "9:00 AM",
+      duration_slots: durSlots,
+      status:         "confirmed",
+      amount,
+      credits_used:   creditsUsed,
+      discount:       0,
+      coach_name:     selB.type === "lesson" ? (selB.coach_name || "") : "",
+      admin_notes:    selB.notes || "",
+      square_payment_id: sqPaymentId,
+    };
+    await db.post("bookings", bkData);
+
+    // Deduct credits
+    if (creditsUsed > 0 && cust) {
+      const newCredits = Math.max(0, (cust.bay_credits_remaining || 0) - creditsUsed);
+      await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: newCredits });
+    }
+
+    // Transaction record
+    if (selB.custId) {
+      await db.post("transactions", {
+        customer_id:  selB.custId,
+        description:  `${selB.type === "lesson" ? "Lesson" : "Bay"} Booking · Bay ${selB.bay}`,
+        date:         selB.date || dateKey(new Date()),
+        amount,
+        payment_label: selB.cardId ? "Card" : "Credits",
+        square_payment_id: sqPaymentId,
+      });
+    }
+
+    fire("Booking created \u2713");
+    setSaving(false);
+    closeModal();
+    reload();
+  };
+
+  /* ── save existing booking edits ── */
+  const saveEdits = async () => {
+    setSaving(true);
+    const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+    await db.patch("bookings", `id=eq.${selB.id}`, {
+      status:         selB.status,
+      bay:            selB.bay,
+      start_time:     selB.time || selB.start_time,
+      duration_slots: durSlots,
+      admin_notes:    selB.notes || "",
+    });
+    fire("Booking updated \u2713");
+    setSaving(false);
+    closeModal();
+    reload();
+  };
+
+  /* ── cancel booking ── */
+  const cancelBooking = async () => {
+    setSaving(true);
+    await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
+    fire("Booking cancelled");
+    setSaving(false);
+    closeModal();
+    reload();
+  };
+
+  /* ── refund ── */
+  const issueRefund = async (asCredits) => {
+    if (!refundModal) return;
+    setSaving(true);
+    const bk = refundModal;
+    const cust = customers.find(c => c.id === bk.customer_id);
+
+    if (asCredits && cust) {
+      const creditsBack = (bk.duration_slots || 2) * 0.5;
+      const newCredits = (cust.bay_credits_remaining || 0) + creditsBack;
+      await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: newCredits });
+      await db.post("transactions", {
+        customer_id:  cust.id,
+        description:  `Refund (credits) \u00b7 Bay ${bk.bay}`,
+        date:         dateKey(new Date()),
+        amount:       creditsBack,
+        payment_label: "Credits",
+      });
+      fire(`${creditsBack} credits refunded \u2713`);
+    } else if (!asCredits && bk.square_payment_id) {
+      await sq("payment.refund", {
+        payment_id: bk.square_payment_id,
+        amount: bk.amount || 0,
+        reason: "Admin refund",
+      });
+      await db.post("transactions", {
+        customer_id:  bk.customer_id,
+        description:  `Refund \u00b7 Bay ${bk.bay}`,
+        date:         dateKey(new Date()),
+        amount:       -(bk.amount || 0),
+        payment_label: "Refund",
+      });
+      fire("Refund issued \u2713");
+    } else {
+      fire("No payment on file to refund");
+    }
+
+    setSaving(false);
+    setRefundModal(null);
+    closeModal();
+    reload();
+  };
+
+  /* ── current credit preview ── */
+  const selCust    = selB?.custObj;
+  const creditInfo = selB ? getCreditInfo(selCust, DUR_MAP[selB.dur] || 2) : null;
+
+  /* ════════════════════════════════════════
+     RENDER
+  ════════════════════════════════════════ */
+  return (
+    <div style={{ padding: "20px 20px 40px", overflowX: "auto" }}>
+
+      {/* ── Header ── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button style={S.navArr} onClick={() => setResDate(addDays(resDate, -1))}>{X.chevL(18)}</button>
+          <div style={{ textAlign: "center", minWidth: 200 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 700 }}>{fmtFull(resDate)}</h2>
+            {isToday && <span style={{ fontSize: 10, fontWeight: 700, color: GREEN, background: GREEN + "14", padding: "2px 8px", borderRadius: 6 }}>TODAY</span>}
+          </div>
+          <button style={S.navArr} onClick={() => setResDate(addDays(resDate, 1))}>{X.chevR(18)}</button>
+          <button style={{ ...S.navArr, fontSize: 11, width: "auto", padding: "0 12px" }} onClick={() => setResDate(new Date())}>Today</button>
+        </div>
+        <button
+          style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }}
+          onClick={() => openNew(1, "9:00 AM")}
+        >
+          {X.plus(14)} New Booking
+        </button>
+      </div>
+
+      {/* ── Legend ── */}
+      <div style={{ display: "flex", gap: 14, marginBottom: 12, flexWrap: "wrap" }}>
+        {[
+          { l: "Member Bay", c: BK_C.bay_member },
+          { l: "Walk-in Bay", c: BK_C.bay_walkin },
+          { l: "Lesson", c: BK_C.lesson },
+          { l: "Blocked", c: RED },
+        ].map(x => (
+          <div key={x.l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={{ width: 10, height: 10, borderRadius: 3, background: x.c }} />
+            <span style={{ fontSize: 10, color: "#888" }}>{x.l}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Bay Grid ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "80px repeat(5,1fr)", border: "1px solid #e8e8e6", borderRadius: 12, overflow: "hidden", background: "#fff", minWidth: 700 }}>
+        <div style={GS.hdr}><span style={{ fontSize: 11, fontWeight: 700, color: "#888" }}>TIME</span></div>
+        {[1, 2, 3, 4, 5].map(b => <div key={b} style={GS.hdr}><span style={{ fontSize: 13, fontWeight: 700 }}>Bay {b}</span></div>)}
+
+        {slots.map(slot => {
+          const rendered = new Set();
+          return (
+            <React.Fragment key={slot}>
+              <div style={GS.timeCell}>
+                <span style={{ fontSize: 11, color: "#888", fontFamily: mono }}>{slot}</span>
+              </div>
+              {[1, 2, 3, 4, 5].map(bay => {
+                const bk      = getBkAt(bay, slot);
+                const blocked = isBlocked(bay, slot);
+                const color   = getBkColor(bk);
+                const bkKey   = bk?.id;
+
+                if (bk && !rendered.has(bkKey)) {
+                  rendered.add(bkKey);
+                  const cust  = customers.find(c => c.id === bk.customer_id);
+                  const name  = cust ? cn(cust) : "Walk-in";
+                  const isMem = cust?.tier && cust.tier !== "none";
+                  const h     = Math.max((bk.duration_slots || 2) * 28, 28);
+                  return (
+                    <div key={bay} style={{ ...GS.cell, position: "relative" }}>
+                      <div
+                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer" }}
+                        onClick={() => openExisting(bk)}
+                      >
+                        <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
+                        <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 1 }}>
+                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: TC[cust.tier], padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
+                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
+                          <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
+                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+                if (bk && rendered.has(bkKey)) return <div key={bay} style={GS.cell} />;
+                if (blocked) return (
+                  <div key={bay} style={{ ...GS.cell, background: RED + "10" }}>
+                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 8, color: RED, fontWeight: 700 }}>BLOCKED</span>
+                    </div>
+                  </div>
+                );
+                return (
+                  <div key={bay} style={{ ...GS.cell, cursor: "pointer" }} onClick={() => openNew(bay, slot)}>
+                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0 }}>
+                      <span style={{ fontSize: 9, color: "#ccc" }}>+</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      {/* ══════════════════════════════════════
+          BOOKING MODAL
+      ══════════════════════════════════════ */}
+      {selB && (
+        <div style={S.ov} onClick={closeModal}>
+          <div style={S.mod} onClick={e => e.stopPropagation()}>
+
+            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>
+              {selB.isNew ? "New Booking" : "Booking Details"}
+            </h3>
+
+            {/* ── Customer picker (new booking only) ── */}
+            {selB.isNew ? (
+              <div style={{ marginBottom: 14 }}>
+                <label style={GS.label}>CUSTOMER *</label>
+
+                {/* Walk-in toggle */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <button
+                    style={{ ...GS.togBtn, flex: 1, ...(!selB.isWalkIn ? { background: GREEN, color: "#fff", borderColor: GREEN } : {}) }}
+                    onClick={() => setSelB(p => ({ ...p, isWalkIn: false }))}
+                  >
+                    Find Customer
+                  </button>
+                  <button
+                    style={{ ...GS.togBtn, flex: 1, ...(selB.isWalkIn ? { background: "#888", color: "#fff", borderColor: "#888" } : {}) }}
+                    onClick={() => setSelB(p => ({ ...p, isWalkIn: true, custId: null, custObj: null, cardId: null })) }
+                  >
+                    Walk-in (no account)
+                  </button>
+                </div>
+
+                {!selB.isWalkIn && (
+                  <>
+                    <input
+                      style={GS.input}
+                      placeholder="Search by name or phone..."
+                      value={custSearch}
+                      onChange={e => setCustSearch(e.target.value)}
+                    />
+                    {custSearch && (
+                      <div style={{ border: "1px solid #e8e8e6", borderRadius: 8, marginTop: 4, maxHeight: 160, overflowY: "auto" }}>
+                        {customers
+                          .filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch))
+                          .slice(0, 8)
+                          .map(c => (
+                            <div
+                              key={c.id}
+                              style={{ padding: "8px 12px", borderBottom: "1px solid #f2f2f0", cursor: "pointer", fontSize: 13 }}
+                              onClick={() => {
+                                setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null }));
+                                setCustSearch("");
+                                loadCards(c.id);
+                              }}
+                            >
+                              <span style={{ fontWeight: 600 }}>{cn(c)}</span>
+                              <span style={{ color: "#888", fontSize: 11, marginLeft: 6 }}>{c.phone}</span>
+                              {c.tier && c.tier !== "none" && (
+                                <span style={{ fontSize: 8, fontWeight: 700, color: "#fff", background: TC[c.tier], padding: "2px 6px", borderRadius: 4, marginLeft: 6, fontFamily: mono }}>{TB[c.tier]}</span>
+                              )}
+                            </div>
+                          ))}
+                        {customers.filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch)).length === 0 && (
+                          <div style={{ padding: "10px 12px", fontSize: 12, color: "#aaa" }}>No customers found</div>
+                        )}
+                      </div>
+                    )}
+                    {selB.custObj && (
+                      <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: GREEN + "10", borderRadius: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: GREEN }}>{cn(selB.custObj)}</span>
+                        {selB.custObj.tier && selB.custObj.tier !== "none" && (
+                          <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: TC[selB.custObj.tier], padding: "2px 6px", borderRadius: 4, fontFamily: mono }}>{TB[selB.custObj.tier]}</span>
+                        )}
+                        <button style={{ marginLeft: "auto", fontSize: 11, color: "#888", background: "none", border: "none", cursor: "pointer" }}
+                          onClick={() => { setSelB(p => ({ ...p, custId: null, custObj: null, cardId: null })); setCustCards([]); }}>
+                          Change
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+                {selB.isWalkIn && (
+                  <div style={{ padding: "8px 12px", background: "#f0f0ee", borderRadius: 8, fontSize: 12, color: "#888" }}>
+                    Walk-in booking — no account required. Payment collected in person.
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* ── Existing booking customer display ── */
+              <div style={{ marginBottom: 14 }}>
+                <label style={GS.label}>CUSTOMER</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <p style={{ fontSize: 14, fontWeight: 600 }}>{selB.custObj ? cn(selB.custObj) : "Walk-in"}</p>
+                  {selB.custObj?.tier && selB.custObj.tier !== "none" && (
+                    <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: TC[selB.custObj.tier], padding: "2px 6px", borderRadius: 4, fontFamily: mono }}>{TB[selB.custObj.tier]}</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── Type / Bay ── */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <div>
+                <label style={GS.label}>TYPE</label>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {["bay", "lesson"].map(t => (
+                    <button
+                      key={t}
+                      style={{ ...GS.togBtn, flex: 1, ...((selB.type || "bay") === t ? { background: t === "lesson" ? PURPLE : GREEN, color: "#fff" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, type: t }))}
+                    >
+                      {t === "lesson" ? "Lesson" : "Bay"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label style={GS.label}>BAY</label>
+                <div style={{ display: "flex", gap: 3 }}>
+                  {[1, 2, 3, 4, 5].map(b => (
+                    <button
+                      key={b}
+                      style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", ...(selB.bay === b ? { background: GREEN, color: "#fff" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, bay: b }))}
+                    >
+                      {b}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* ── Date / Time / Duration ── */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+              <div>
+                <label style={GS.label}>DATE</label>
+                <input type="date" style={GS.input} value={selB.date || dateKey(resDate)} onChange={e => setSelB(p => ({ ...p, date: e.target.value }))} />
+              </div>
+              <div>
+                <label style={GS.label}>TIME</label>
+                <select style={GS.select} value={selB.time || selB.start_time || "9:00 AM"} onChange={e => setSelB(p => ({ ...p, time: e.target.value }))}>
+                  {SLOTS.map(s => <option key={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={GS.label}>DURATION</label>
+                <select style={GS.select} value={selB.dur || slotsToLabel(selB.duration_slots)} onChange={e => setSelB(p => ({ ...p, dur: e.target.value }))}>
+                  {DUR_LABELS.map(d => <option key={d}>{d}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* ── Coach (lesson only) ── */}
+            {(selB.type || "bay") === "lesson" && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={GS.label}>COACH</label>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {["Santiago Espinoza", "Nicolas Cavero"].map(c => (
+                    <button
+                      key={c}
+                      style={{ ...GS.togBtn, flex: 1, ...((selB.coach_name) === c ? { background: PURPLE, color: "#fff" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, coach_name: c }))}
+                    >
+                      {c.split(" ")[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Payment / Credits (when customer is selected) ── */}
+            {(selB.custObj && !selB.isWalkIn) && (
+              <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+                <label style={GS.label}>PAYMENT</label>
+
+                {/* Credits banner */}
+                {creditInfo && creditInfo.used > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: GREEN + "14", borderRadius: 8 }}>
+                    <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
+                      {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.avail} available)
+                    </span>
+                    {creditInfo.remain > 0 && (
+                      <span style={{ fontSize: 11, color: "#888" }}>· {creditInfo.remain}hr charged to card</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Card picker */}
+                {loadingCards ? (
+                  <p style={{ fontSize: 12, color: "#aaa" }}>Loading cards...</p>
+                ) : custCards.length === 0 ? (
+                  <p style={{ fontSize: 12, color: "#aaa" }}>No cards on file — collect payment in person or ask customer to add card in their app.</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {custCards.map(card => (
+                      <button
+                        key={card.id}
+                        style={{ ...GS.togBtn, display: "flex", alignItems: "center", gap: 8, ...(selB.cardId === card.id ? { background: GREEN, color: "#fff", borderColor: GREEN } : {}) }}
+                        onClick={() => setSelB(p => ({ ...p, cardId: card.id }))}
+                      >
+                        {X.card(14)}
+                        <span>{card.brand} •••• {card.last4}</span>
+                        {card.is_default && <span style={{ fontSize: 10, opacity: 0.7, marginLeft: "auto" }}>default</span>}
+                      </button>
+                    ))}
+                    <button
+                      style={{ ...GS.togBtn, display: "flex", alignItems: "center", gap: 6, ...(selB.cardId === "in_person" ? { background: "#888", color: "#fff", borderColor: "#888" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, cardId: "in_person" }))}
+                    >
+                      Pay in person
+                    </button>
+                  </div>
+                )}
+
+                {/* Amount preview */}
+                {selB.cardId && selB.cardId !== "in_person" && (() => {
+                  const durSlots = DUR_MAP[selB.dur] || 2;
+                  const hrs = durSlots * 0.5;
+                  const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+                  const isWk = d.getDay() === 0 || d.getDay() === 6;
+                  const hour  = toH(selB.time || "9:00 AM");
+                  const isPeak = !isWk && hour >= 17;
+                  const rate  = isPeak ? cfg.pk : cfg.op;
+                  const paidHrs = creditInfo ? creditInfo.remain : hrs;
+                  const amount  = paidHrs * rate;
+                  return (
+                    <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(non-peak)"}</span>
+                      <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${amount.toFixed(2)}</span>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* ── Status (existing booking) ── */}
+            {!selB.isNew && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={GS.label}>STATUS</label>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {["confirmed", "checked-in", "completed", "cancelled"].map(st => (
+                    <button
+                      key={st}
+                      style={{ ...GS.togBtn, fontSize: 11, ...(selB.status === st ? { background: st === "cancelled" ? RED : GREEN, color: "#fff" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, status: st }))}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Admin notes ── */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={GS.label}>ADMIN NOTES (not visible to customer)</label>
+              <textarea
+                style={{ ...GS.input, minHeight: 60, resize: "vertical" }}
+                value={selB.notes || ""}
+                onChange={e => setSelB(p => ({ ...p, notes: e.target.value }))}
+                placeholder="Internal notes..."
+              />
+            </div>
+
+            {/* ── Validation warning ── */}
+            {selB.isNew && !selB.custId && !selB.isWalkIn && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: ORANGE + "18", borderRadius: 8, marginBottom: 12 }}>
+                {X.warn(14)}
+                <span style={{ fontSize: 12, color: ORANGE, fontWeight: 600 }}>A customer must be selected before booking</span>
+              </div>
+            )}
+
+            {/* ── Action buttons ── */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {selB.isNew ? (
+                <button
+                  style={{ ...S.b1, flex: 1, opacity: (selB.custId || selB.isWalkIn) ? 1 : 0.35 }}
+                  disabled={!selB.custId && !selB.isWalkIn || saving}
+                  onClick={createBooking}
+                >
+                  {saving ? "Saving..." : "Create Booking"}
+                </button>
+              ) : (
+                <>
+                  <button style={{ ...S.b1, flex: 1 }} onClick={saveEdits} disabled={saving}>
+                    {saving ? "Saving..." : "Save Changes"}
+                  </button>
+                  {/* Refund button — only if payment exists */}
+                  {selB.square_payment_id && (
+                    <button
+                      style={{ ...GS.togBtn, display: "flex", alignItems: "center", gap: 4, padding: "10px 14px" }}
+                      onClick={() => setRefundModal(selB)}
+                    >
+                      {X.refund(14)} Refund
+                    </button>
+                  )}
+                  <button
+                    style={{ ...S.bDanger, padding: "10px 14px" }}
+                    onClick={cancelBooking}
+                    disabled={saving}
+                  >
+                    {X.trash(14)} Cancel
+                  </button>
+                </>
+              )}
+              <button style={{ ...GS.togBtn, padding: "10px 14px" }} onClick={closeModal}>Close</button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          REFUND MODAL
+      ══════════════════════════════════════ */}
+      {refundModal && (
+        <div style={S.ov} onClick={() => setRefundModal(null)}>
+          <div style={{ ...S.mod, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Issue Refund</h3>
+            <p style={{ fontSize: 13, color: "#888", marginBottom: 20 }}>
+              Choose how to refund Bay {refundModal.bay} · {(refundModal.duration_slots || 2) * 0.5}hr
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button
+                style={{ ...S.b1, background: GREEN }}
+                onClick={() => issueRefund(true)}
+                disabled={saving}
+              >
+                {X.refund(14)} Refund as Credits
+              </button>
+              <button
+                style={{ ...S.b1, background: refundModal.square_payment_id ? GREEN : "#ccc" }}
+                onClick={() => issueRefund(false)}
+                disabled={!refundModal.square_payment_id || saving}
+              >
+                {X.card(14)} Refund to Card — ${(refundModal.amount || 0).toFixed(2)}
+              </button>
+              {!refundModal.square_payment_id && (
+                <p style={{ fontSize: 11, color: "#aaa", textAlign: "center" }}>No card payment found for this booking</p>
+              )}
+              <button style={{ ...GS.togBtn, width: "100%" }} onClick={() => setRefundModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
