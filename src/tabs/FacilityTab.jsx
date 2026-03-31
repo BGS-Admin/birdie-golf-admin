@@ -260,16 +260,27 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, fire
                           <select
                             style={{ ...GS.select, padding: "4px 6px", fontSize: 10, textAlign: "center" }}
                             value={dayData.from}
-                            onChange={e => setDayTime(coach.id, idx, "from", e.target.value)}
+                            onChange={e => {
+                              const newFrom = e.target.value;
+                              const fromIdx = SLOTS.indexOf(newFrom);
+                              const toIdx   = SLOTS.indexOf(dayData.to);
+                              // If end time is now <= start, push it one slot ahead
+                              const newTo = toIdx <= fromIdx ? SLOTS[Math.min(fromIdx + 1, SLOTS.length - 1)] : dayData.to;
+                              setDayTime(coach.id, idx, "from", newFrom);
+                              if (newTo !== dayData.to) setDayTime(coach.id, idx, "to", newTo);
+                            }}
                           >
-                            {SLOTS.map(s => <option key={s}>{s}</option>)}
+                            {SLOTS.slice(0, SLOTS.length - 1).map(s => <option key={s}>{s}</option>)}
                           </select>
                           <select
                             style={{ ...GS.select, padding: "4px 6px", fontSize: 10, textAlign: "center" }}
                             value={dayData.to}
                             onChange={e => setDayTime(coach.id, idx, "to", e.target.value)}
                           >
-                            {SLOTS.map(s => <option key={s}>{s}</option>)}
+                            {SLOTS.filter(s => {
+                              const fromH = SLOTS.indexOf(dayData.from);
+                              return SLOTS.indexOf(s) > fromH;
+                            }).map(s => <option key={s}>{s}</option>)}
                           </select>
                         </>
                       )}

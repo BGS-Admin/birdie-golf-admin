@@ -323,12 +323,20 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
           <button style={S.navArr} onClick={() => setResDate(addDays(resDate, 1))}>{X.chevR(18)}</button>
           <button style={{ ...S.navArr, fontSize: 11, width: "auto", padding: "0 12px" }} onClick={() => setResDate(new Date())}>Today</button>
         </div>
-        <button
-          style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }}
-          onClick={() => openNew(1, "9:00 AM")}
-        >
-          {X.plus(14)} New Booking
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }}
+            onClick={reload}
+          >
+            \u21bb Refresh
+          </button>
+          <button
+            style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }}
+            onClick={() => openNew(1, "9:00 AM")}
+          >
+            {X.plus(14)} New Booking
+          </button>
+        </div>
       </div>
 
       {/* ── Legend ── */}
@@ -461,13 +469,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                           ))}
                         {/* "Not found" → offer to create new */}
                         {customers.filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch)).length === 0 && (
-                          <div
-                            style={{ padding: "10px 12px", fontSize: 12, cursor: "pointer", color: GREEN, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
-                            onClick={() => { setSelB(p => ({ ...p, isWalkIn: true, newCustInfo: { firstName: "", lastName: "", phone: custSearch.replace(/\D/g,""), email: "", cardName: "", cardNumber: "", cardExp: "", cardCvc: "" } })); setCustSearch(""); }}
-                          >
-                            {X.plus(13)} No results — create new customer
-                          </div>
+                          <div style={{ padding: "10px 12px", fontSize: 12, color: "#aaa" }}>No customers found</div>
                         )}
+                        {/* Always show option to create new */}
+                        <div
+                          style={{ padding: "10px 12px", fontSize: 12, cursor: "pointer", color: GREEN, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, borderTop: "1px solid #f2f2f0" }}
+                          onClick={() => { setSelB(p => ({ ...p, isWalkIn: true, newCustInfo: { firstName: "", lastName: "", phone: custSearch.replace(/\D/g,""), email: "", cardName: "", cardNumber: "", cardExp: "", cardCvc: "" } })); setCustSearch(""); }}
+                        >
+                          {X.plus(13)} Add new customer
+                        </div>
                       </div>
                     )}
                   </>
