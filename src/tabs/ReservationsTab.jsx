@@ -122,75 +122,106 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
   /* ── create booking ── */
   const createBooking = async () => {
-    if (!selB.custId && !selB.isWalkIn) return;
+    const isNew = selB.isWalkIn;
+    const info  = selB.newCustInfo || {};
+
+    // Validate: need either existing customer or new customer with name+phone
+    if (!selB.custId && !(isNew && info.firstName && info.phone)) return;
     setSaving(true);
 
-    const durSlots = DUR_MAP[selB.dur] || 2;
-    const cust     = selB.custObj;
-    const creditInfo = cust ? getCreditInfo(cust, durSlots) : null;
+    let custId  = selB.custId;
+    let custObj = selB.custObj;
+
+    // ── Create new customer in Supabase + Square ──
+    if (isNew && !custId) {
+      const phone = (info.phone || "").replace(/\D/g, "");
+      const newRows = await db.post("customers", {
+        first_name: info.firstName,
+        last_name:  info.lastName || "",
+        phone,
+        email:      info.email || "",
+        tier:       "none",
+      });
+      const newCust = Array.isArray(newRows) ? newRows[0] : newRows;
+      if (newCust?.id) {
+        custId  = newCust.id;
+        custObj = newCust;
+        // Create in Square too
+        const sqResult = await sq("customer.create", {
+          first_name: info.firstName,
+          last_name:  info.lastName || "",
+          phone,
+          email:      info.email || "",
+          supabase_id: custId,
+        });
+        const sqId = sqResult?.customer?.id;
+        if (sqId) {
+          await db.patch("customers", `id=eq.${custId}`, { square_customer_id: sqId });
+          custObj = { ...custObj, square_customer_id: sqId };
+        }
+      }
+    }
+
+    const durSlots   = DUR_MAP[selB.dur] || 2;
+    const creditInfo = custObj ? getCreditInfo(custObj, durSlots) : null;
     const creditsUsed = creditInfo ? creditInfo.used : 0;
 
     // Calculate charge amount
-    let amount = 0;
-    if (selB.cardId && !selB.isWalkIn) {
-      const hrs = durSlots * 0.5;
-      const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-      const isWk = d.getDay() === 0 || d.getDay() === 6;
-      const isWkday = !isWk;
-      const hour  = toH(selB.time || "9:00 AM");
-      const isPeak = isWkday && hour >= 17;
-      const rate = isPeak ? cfg.pk : cfg.op;
-      const paidHrs = creditInfo ? creditInfo.remain : hrs;
-      amount = paidHrs * rate;
-    }
+    const hrs    = durSlots * 0.5;
+    const d      = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+    const isWk   = d.getDay() === 0 || d.getDay() === 6;
+    const hour   = toH(selB.time || "9:00 AM");
+    const isPeak = !isWk && hour >= 17;
+    const rate   = isPeak ? cfg.pk : cfg.op;
+    const paidHrs = creditInfo ? creditInfo.remain : hrs;
+    let amount   = selB.cardId && selB.cardId !== "in_person" ? paidHrs * rate : 0;
 
-    // Charge card if amount > 0 and card on file
+    // Charge card if applicable
     let sqPaymentId = null;
-    if (amount > 0 && selB.cardId && cust?.square_customer_id) {
+    if (amount > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
       const sqCard = custCards.find(c => c.id === selB.cardId);
       if (sqCard?.square_card_id) {
         const payment = await sq("payment.create", {
-          square_customer_id: cust.square_customer_id,
+          square_customer_id: custObj.square_customer_id,
           card_id: sqCard.square_card_id,
           amount,
-          note: `Bay ${selB.bay} · ${selB.date || dateKey(resDate)}`,
+          note: `Bay ${selB.bay} \u00b7 ${selB.date || dateKey(resDate)}`,
         });
         sqPaymentId = payment?.payment?.id || null;
       }
     }
 
     // Write booking
-    const bkData = {
-      customer_id:    selB.custId || null,
-      type:           selB.type || "bay",
-      bay:            selB.bay || 1,
-      date:           selB.date || dateKey(resDate),
-      start_time:     selB.time || "9:00 AM",
-      duration_slots: durSlots,
-      status:         "confirmed",
+    await db.post("bookings", {
+      customer_id:       custId || null,
+      type:              selB.type || "bay",
+      bay:               selB.bay || 1,
+      date:              selB.date || dateKey(resDate),
+      start_time:        selB.time || "9:00 AM",
+      duration_slots:    durSlots,
+      status:            "confirmed",
       amount,
-      credits_used:   creditsUsed,
-      discount:       0,
-      coach_name:     selB.type === "lesson" ? (selB.coach_name || "") : "",
-      admin_notes:    selB.notes || "",
+      credits_used:      creditsUsed,
+      discount:          0,
+      coach_name:        selB.type === "lesson" ? (selB.coach_name || "") : "",
+      admin_notes:       selB.notes || "",
       square_payment_id: sqPaymentId,
-    };
-    await db.post("bookings", bkData);
+    });
 
     // Deduct credits
-    if (creditsUsed > 0 && cust) {
-      const newCredits = Math.max(0, (cust.bay_credits_remaining || 0) - creditsUsed);
-      await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: newCredits });
+    if (creditsUsed > 0 && custObj?.id) {
+      const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
+      await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
     }
 
     // Transaction record
-    if (selB.custId) {
+    if (custId) {
       await db.post("transactions", {
-        customer_id:  selB.custId,
-        description:  `${selB.type === "lesson" ? "Lesson" : "Bay"} Booking · Bay ${selB.bay}`,
-        date:         selB.date || dateKey(new Date()),
+        customer_id:       custId,
+        description:       `${selB.type === "lesson" ? "Lesson" : "Bay"} Booking \u00b7 Bay ${selB.bay}`,
+        date:              selB.date || dateKey(new Date()),
         amount,
-        payment_label: selB.cardId ? "Card" : "Credits",
+        payment_label:     selB.cardId === "in_person" ? "In Person" : selB.cardId ? "Card" : "Credits",
         square_payment_id: sqPaymentId,
       });
     }
@@ -393,23 +424,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
               <div style={{ marginBottom: 14 }}>
                 <label style={GS.label}>CUSTOMER *</label>
 
-                {/* Walk-in toggle */}
-                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-                  <button
-                    style={{ ...GS.togBtn, flex: 1, ...(!selB.isWalkIn ? { background: GREEN, color: "#fff", borderColor: GREEN } : {}) }}
-                    onClick={() => setSelB(p => ({ ...p, isWalkIn: false }))}
-                  >
-                    Find Customer
-                  </button>
-                  <button
-                    style={{ ...GS.togBtn, flex: 1, ...(selB.isWalkIn ? { background: "#888", color: "#fff", borderColor: "#888" } : {}) }}
-                    onClick={() => setSelB(p => ({ ...p, isWalkIn: true, custId: null, custObj: null, cardId: null })) }
-                  >
-                    Walk-in (no account)
-                  </button>
-                </div>
-
-                {!selB.isWalkIn && (
+                {/* Mode: search existing / new customer */}
+                {!selB.isWalkIn && !selB.custObj && (
                   <>
                     <input
                       style={GS.input}
@@ -427,7 +443,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                               key={c.id}
                               style={{ padding: "8px 12px", borderBottom: "1px solid #f2f2f0", cursor: "pointer", fontSize: 13 }}
                               onClick={() => {
-                                setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null }));
+                                setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null, isWalkIn: false }));
                                 setCustSearch("");
                                 loadCards(c.id);
                               }}
@@ -439,28 +455,100 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                               )}
                             </div>
                           ))}
+                        {/* "Not found" → offer to create new */}
                         {customers.filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch)).length === 0 && (
-                          <div style={{ padding: "10px 12px", fontSize: 12, color: "#aaa" }}>No customers found</div>
+                          <div
+                            style={{ padding: "10px 12px", fontSize: 12, cursor: "pointer", color: GREEN, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
+                            onClick={() => { setSelB(p => ({ ...p, isWalkIn: true, newCustInfo: { firstName: "", lastName: "", phone: custSearch.replace(/\D/g,""), email: "", cardName: "", cardNumber: "", cardExp: "", cardCvc: "" } })); setCustSearch(""); }}
+                          >
+                            {X.plus(13)} No results — create new customer
+                          </div>
                         )}
-                      </div>
-                    )}
-                    {selB.custObj && (
-                      <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: GREEN + "10", borderRadius: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: GREEN }}>{cn(selB.custObj)}</span>
-                        {selB.custObj.tier && selB.custObj.tier !== "none" && (
-                          <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: TC[selB.custObj.tier], padding: "2px 6px", borderRadius: 4, fontFamily: mono }}>{TB[selB.custObj.tier]}</span>
-                        )}
-                        <button style={{ marginLeft: "auto", fontSize: 11, color: "#888", background: "none", border: "none", cursor: "pointer" }}
-                          onClick={() => { setSelB(p => ({ ...p, custId: null, custObj: null, cardId: null })); setCustCards([]); }}>
-                          Change
-                        </button>
                       </div>
                     )}
                   </>
                 )}
+
+                {/* Selected existing customer */}
+                {!selB.isWalkIn && selB.custObj && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: GREEN + "10", borderRadius: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: GREEN }}>{cn(selB.custObj)}</span>
+                    {selB.custObj.tier && selB.custObj.tier !== "none" && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: TC[selB.custObj.tier], padding: "2px 6px", borderRadius: 4, fontFamily: mono }}>{TB[selB.custObj.tier]}</span>
+                    )}
+                    <button style={{ marginLeft: "auto", fontSize: 11, color: "#888", background: "none", border: "none", cursor: "pointer" }}
+                      onClick={() => { setSelB(p => ({ ...p, custId: null, custObj: null, cardId: null })); setCustCards([]); }}>
+                      Change
+                    </button>
+                  </div>
+                )}
+
+                {/* New customer form */}
                 {selB.isWalkIn && (
-                  <div style={{ padding: "8px 12px", background: "#f0f0ee", borderRadius: 8, fontSize: 12, color: "#888" }}>
-                    Walk-in booking — no account required. Payment collected in person.
+                  <div style={{ background: "#fafaf8", border: "1px solid #e8e8e6", borderRadius: 10, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#555" }}>NEW CUSTOMER INFO</span>
+                      <button style={{ fontSize: 11, color: "#aaa", background: "none", border: "none", cursor: "pointer" }}
+                        onClick={() => setSelB(p => ({ ...p, isWalkIn: false, newCustInfo: null }))}>
+                        Back to search
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ ...GS.label, fontSize: 10 }}>FIRST NAME *</label>
+                        <input style={GS.input} value={selB.newCustInfo?.firstName || ""} onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, firstName: e.target.value } }))} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ ...GS.label, fontSize: 10 }}>LAST NAME *</label>
+                        <input style={GS.input} value={selB.newCustInfo?.lastName || ""} onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, lastName: e.target.value } }))} />
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ ...GS.label, fontSize: 10 }}>PHONE *</label>
+                        <input style={GS.input} placeholder="3051234567" value={selB.newCustInfo?.phone || ""} onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, phone: e.target.value } }))} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={{ ...GS.label, fontSize: 10 }}>EMAIL</label>
+                        <input style={GS.input} placeholder="optional" value={selB.newCustInfo?.email || ""} onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, email: e.target.value } }))} />
+                      </div>
+                    </div>
+                    {/* Card info */}
+                    <div style={{ borderTop: "1px solid #e8e8e6", paddingTop: 10, marginTop: 2 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#555", display: "block", marginBottom: 8 }}>CARD ON FILE (optional — collect in person if not available)</span>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ ...GS.label, fontSize: 10 }}>NAME ON CARD</label>
+                        <input style={GS.input} value={selB.newCustInfo?.cardName || ""} onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, cardName: e.target.value } }))} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <div style={{ flex: 2 }}>
+                          <label style={{ ...GS.label, fontSize: 10 }}>CARD NUMBER</label>
+                          <input style={GS.input} placeholder="4242 4242 4242 4242" maxLength={19}
+                            value={selB.newCustInfo?.cardNumber || ""}
+                            onChange={e => {
+                              const v = e.target.value.replace(/\D/g,"").slice(0,16);
+                              const fmt = v.match(/.{1,4}/g)?.join(" ") || v;
+                              setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, cardNumber: fmt } }));
+                            }} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ ...GS.label, fontSize: 10 }}>EXP (MM/YY)</label>
+                          <input style={GS.input} placeholder="12/27" maxLength={5}
+                            value={selB.newCustInfo?.cardExp || ""}
+                            onChange={e => {
+                              let v = e.target.value.replace(/\D/g,"").slice(0,4);
+                              if (v.length > 2) v = v.slice(0,2) + "/" + v.slice(2);
+                              setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, cardExp: v } }));
+                            }} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ ...GS.label, fontSize: 10 }}>CVC</label>
+                          <input style={GS.input} placeholder="123" maxLength={4}
+                            value={selB.newCustInfo?.cardCvc || ""}
+                            onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, cardCvc: e.target.value.replace(/\D/g,"").slice(0,4) } }))} />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -645,7 +733,13 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
             {selB.isNew && !selB.custId && !selB.isWalkIn && (
               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: ORANGE + "18", borderRadius: 8, marginBottom: 12 }}>
                 {X.warn(14)}
-                <span style={{ fontSize: 12, color: ORANGE, fontWeight: 600 }}>A customer must be selected before booking</span>
+                <span style={{ fontSize: 12, color: ORANGE, fontWeight: 600 }}>Search for a customer or enter new customer details above</span>
+              </div>
+            )}
+            {selB.isNew && selB.isWalkIn && !(selB.newCustInfo?.firstName && selB.newCustInfo?.phone) && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", background: ORANGE + "18", borderRadius: 8, marginBottom: 12 }}>
+                {X.warn(14)}
+                <span style={{ fontSize: 12, color: ORANGE, fontWeight: 600 }}>First name and phone are required</span>
               </div>
             )}
 
@@ -653,8 +747,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {selB.isNew ? (
                 <button
-                  style={{ ...S.b1, flex: 1, opacity: (selB.custId || selB.isWalkIn) ? 1 : 0.35 }}
-                  disabled={!selB.custId && !selB.isWalkIn || saving}
+                  style={{ ...S.b1, flex: 1, opacity: (selB.custId || (selB.isWalkIn && selB.newCustInfo?.firstName && selB.newCustInfo?.phone)) ? 1 : 0.35 }}
+                  disabled={!selB.custId && !(selB.isWalkIn && selB.newCustInfo?.firstName && selB.newCustInfo?.phone) || saving}
                   onClick={createBooking}
                 >
                   {saving ? "Saving..." : "Create Booking"}
