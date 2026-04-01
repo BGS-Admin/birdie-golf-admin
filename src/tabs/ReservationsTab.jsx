@@ -82,6 +82,10 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   };
 
   const openNew = (bay, slot) => {
+    const now = new Date();
+    const isToday = dateKey(resDate) === dateKey(now);
+    const currentH = now.getHours() + now.getMinutes() / 60;
+    if (isToday && toH(slot) <= currentH) return;
     setSelB({ isNew: true, type: "bay", bay, time: slot, dur: "1h", date: dateKey(resDate), custId: null, custObj: null, cardId: null, useCredits: false, notes: "" });
     setCustCards([]); setCustSearch("");
   };
@@ -353,9 +357,17 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                 <label style={GS.label}>CUSTOMER *</label>
                 {!selB.isWalkIn && !selB.custObj && (
                   <>
-                    <input style={GS.input} placeholder="Search by name or phone..." value={custSearch} onChange={e => setCustSearch(e.target.value)} />
+                    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                      <input style={{ ...GS.input, flex: 1 }} placeholder="Search existing customer..." value={custSearch} onChange={e => setCustSearch(e.target.value)} />
+                      <button
+                        style={{ ...GS.togBtn, background: GREEN, color: "#fff", borderColor: GREEN, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", flexShrink: 0 }}
+                        onClick={() => { setSelB(p => ({ ...p, isWalkIn: true, newCustInfo: { firstName: "", lastName: "", phone: "", email: "", cardName: "", cardNumber: "", cardExp: "", cardCvc: "" } })); setCustSearch(""); }}
+                      >
+                        {X.plus(13)} New Customer
+                      </button>
+                    </div>
                     {custSearch && (
-                      <div style={{ border: "1px solid #e8e8e6", borderRadius: 8, marginTop: 4, maxHeight: 160, overflowY: "auto" }}>
+                      <div style={{ border: "1px solid #e8e8e6", borderRadius: 8, marginTop: 0, maxHeight: 160, overflowY: "auto", marginBottom: 8 }}>
                         {customers.filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch)).slice(0, 8).map(c => (
                           <div key={c.id} style={{ padding: "8px 12px", borderBottom: "1px solid #f2f2f0", cursor: "pointer", fontSize: 13 }}
                             onClick={() => { setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null, isWalkIn: false })); setCustSearch(""); loadCards(c.id); }}>
@@ -365,10 +377,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                           </div>
                         ))}
                         {customers.filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch)).length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: "#aaa" }}>No customers found</div>}
-                        <div style={{ padding: "10px 12px", fontSize: 12, cursor: "pointer", color: GREEN, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, borderTop: "1px solid #f2f2f0" }}
-                          onClick={() => { setSelB(p => ({ ...p, isWalkIn: true, newCustInfo: { firstName: "", lastName: "", phone: custSearch.replace(/\D/g,""), email: "", cardName: "", cardNumber: "", cardExp: "", cardCvc: "" } })); setCustSearch(""); }}>
-                          {X.plus(13)} Add new customer
-                        </div>
                       </div>
                     )}
                   </>
