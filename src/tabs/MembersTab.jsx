@@ -184,7 +184,9 @@ export default function MembersTab({ customers, fire, reload }) {
                       style={{ width: 26, height: 26, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: activeTier.c }}
                       onClick={async () => {
                         const cur = c.bay_credits_remaining || 0;
-                        const next = Math.round((cur + 0.5) * 10) / 10;
+                        const max = c.bay_credits_total || activeTier.hrs;
+                        const next = Math.min(max, Math.round((cur + 0.5) * 10) / 10);
+                        if (next === cur) return;
                         await db.patch("customers", `id=eq.${c.id}`, { bay_credits_remaining: next });
                         reload();
                       }}

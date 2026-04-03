@@ -44,7 +44,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   /* ── grid helpers ── */
   const slots       = getSlots(resDate);
   const isToday     = dateKey(resDate) === dateKey(new Date());
-  const dayBookings = bookings.filter(b => b.date === dateKey(resDate));
+  const dayBookings = bookings.filter(b => b.date === dateKey(resDate) && b.status !== "cancelled");
 
   const getBkAt = (bay, slot) => {
     const si = SLOTS.indexOf(slot);
@@ -384,7 +384,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color + "40", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
+                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
                         <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
