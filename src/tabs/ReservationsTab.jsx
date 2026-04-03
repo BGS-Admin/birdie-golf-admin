@@ -127,25 +127,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
     // Validate: need either existing customer or new customer with name+phone
     if (!selB.custId && !(isNew && info.firstName && info.phone)) return;
-
-    // ── Conflict check: ensure bay + time + date is not already booked ──
-    const bkDate    = selB.date || dateKey(resDate);
-    const durSlots0 = DUR_MAP[selB.dur] || 2;
-    const newStart  = SLOTS.indexOf(selB.time || "9:00 AM");
-    const newEnd    = newStart + durSlots0;
-    const conflict  = bookings.find(b => {
-      if (b.status === "cancelled") return false;
-      if (b.bay !== selB.bay)       return false;
-      if (b.date !== bkDate)        return false;
-      const bStart = SLOTS.indexOf(b.start_time);
-      const bEnd   = bStart + (b.duration_slots || 2);
-      return newStart < bEnd && newEnd > bStart;
-    });
-    if (conflict) {
-      fire("Bay " + selB.bay + " is already booked at that time – pick another slot");
-      return;
-    }
-
     setSaving(true);
 
     let custId  = selB.custId;
@@ -403,7 +384,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
+                        style={{ ...GS.booking, background: color + "40", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
                         <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
