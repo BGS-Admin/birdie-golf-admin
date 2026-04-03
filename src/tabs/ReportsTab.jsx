@@ -55,9 +55,10 @@ const PERIODS = [
 
 /* ═══════════════════════════════════════════════════════════ */
 export default function ReportsTab({ bookings, customers }) {
-  const [period,   setPeriod]   = useState("this_month");
-  const [txns,     setTxns]     = useState([]);
-  const [loadingT, setLoadingT] = useState(true);
+  const [period,         setPeriod]         = useState("this_month");
+  const [txns,           setTxns]           = useState([]);
+  const [loadingT,       setLoadingT]       = useState(true);
+  const [showAllClients, setShowAllClients] = useState(false);
 
   /* fetch transactions once */
   useEffect(() => {
@@ -175,6 +176,33 @@ export default function ReportsTab({ bookings, customers }) {
     coachMap[name] = (coachMap[name] || 0) + 1;
   });
   const maxCoach = Math.max(...Object.values(coachMap), 1);
+
+  /* ══════════════════ REVENUE BY CLIENT ══════════════════ */
+  const clientRevenue = useMemo(() => {
+    const map = {};
+    // Bay & lesson bookings
+    confirmedBk.forEach(b => {
+      if (!b.customer_id) return;
+      if (!map[b.customer_id]) map[b.customer_id] = { bay: 0, lesson: 0, membership: 0 };
+      if (b.type === "bay")    map[b.customer_id].bay    += Number(b.amount || 0);
+      if (b.type === "lesson") map[b.customer_id].lesson += Number(b.amount || 0);
+    });
+    // Membership transactions
+    filteredTxns
+      .filter(t => (t.description || "").toLowerCase().includes("membership") && t.customer_id)
+      .forEach(t => {
+        if (!map[t.customer_id]) map[t.customer_id] = { bay: 0, lesson: 0, membership: 0 };
+        map[t.customer_id].membership += Number(t.amount || 0);
+      });
+    return Object.entries(map)
+      .map(([custId, rev]) => {
+        const cust = customers.find(c => c.id === custId);
+        const total = rev.bay + rev.lesson + rev.membership;
+        return { custId, name: cust ? cn(cust) : "Unknown", tier: cust?.tier || "none", total, ...rev };
+      })
+      .filter(r => r.total > 0)
+      .sort((a, b2) => b2.total - a.total);
+  }, [confirmedBk, filteredTxns, customers]);
 
   /* ══════════════════ CUSTOMERS & MEMBERS ══════════════════ */
   const activeMembers = customers.filter(c => c.tier && c.tier !== "none");
@@ -424,7 +452,68 @@ export default function ReportsTab({ bookings, customers }) {
         )
       }
 
-      {/* At-risk members */}
+      {/* ── REVENUE BY CLIENT ── */}
+      <SectionTitle>Revenue by Client</SectionTitle>
+      {clientRevenue.length === 0
+        ? <div style={S.empty}><p style={{ fontSize: 14 }}>No revenue data for this period</p></div>
+        : (
+          <div style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, padding: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 14, gap: 8 }}>
+              <p style={{ ...GS.label, margin: 0, flex: 1 }}>TOP CLIENTS BY SPEND</p>
+              <div style={{ display: "flex", gap: 14 }}>
+                {[["Bay", GREEN], ["Lessons", PURPLE], ["Membership", "#124A2B"]].map(([l, c]) => (
+                  <div key={l} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <div style={{ width: 8, height: 8, borderRadius: 2, background: c }} />
+                    <span style={{ fontSize: 11, color: "#888" }}>{l}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {(showAllClients ? clientRevenue : clientRevenue.slice(0, 10)).map(({ custId, name, tier, total, bay, lesson, membership }) => {
+                const t = TIERS.find(x => x.id === tier);
+                const maxRev = clientRevenue[0]?.total || 1;
+                return (
+                  <div key={custId}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{name}</span>
+                        {t && tier !== "none" && (
+                          <span style={{ fontSize: 10, fontWeight: 700, background: t.c + "20", color: t.c, padding: "2px 7px", borderRadius: 6 }}>{t.n}</span>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 13, fontWeight: 700, fontFamily: mono }}>{fmt$(total)}</span>
+                    </div>
+                    {/* Stacked segment bar */}
+                    <div style={{ display: "flex", height: 10, borderRadius: 99, overflow: "hidden", width: "100%", background: "#f0f0ee" }}>
+                      <div style={{ width: (bay / maxRev * 100) + "%", background: GREEN, transition: "width .4s ease" }} />
+                      <div style={{ width: (lesson / maxRev * 100) + "%", background: PURPLE, transition: "width .4s ease" }} />
+                      <div style={{ width: (membership / maxRev * 100) + "%", background: "#124A2B", transition: "width .4s ease" }} />
+                    </div>
+                    <p style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>
+                      {bay > 0 && <span>Bay {fmt$(bay)}</span>}
+                      {bay > 0 && (lesson > 0 || membership > 0) && <span style={{ margin: "0 6px" }}>·</span>}
+                      {lesson > 0 && <span>Lessons {fmt$(lesson)}</span>}
+                      {lesson > 0 && membership > 0 && <span style={{ margin: "0 6px" }}>·</span>}
+                      {membership > 0 && <span>Membership {fmt$(membership)}</span>}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+            {clientRevenue.length > 10 && (
+              <button
+                style={{ marginTop: 16, width: "100%", padding: "10px", background: "#f8f8f6", border: "1px solid #e8e8e6", borderRadius: 10, fontSize: 12, fontWeight: 600, color: "#555", cursor: "pointer", fontFamily: ff }}
+                onClick={() => setShowAllClients(p => !p)}
+              >
+                {showAllClients ? "Show Top 10" : `Show All ${clientRevenue.length} Clients`}
+              </button>
+            )}
+          </div>
+        )
+      }
+
+      {/* At-risk members */}}
       {atRisk.length > 0 && (
         <>
           <SectionTitle>At-Risk Members</SectionTitle>
