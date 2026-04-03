@@ -442,17 +442,54 @@ export default function MembersTab({ customers, fire, reload }) {
               <p style={{ fontSize: 13, color: "#aaa", textAlign: "center", padding: "20px 0" }}>No transactions found</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column" }}>
-                {txnModal.txns.map((t, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f2f2f0" }}>
-                    <div style={{ flex: 1 }}>
-                      <p style={{ fontSize: 13, fontWeight: 500 }}>{t.description || "Transaction"}</p>
-                      <p style={{ fontSize: 11, color: "#888" }}>{t.date} · {t.payment_label || "—"}</p>
+                {txnModal.txns.map((t, i) => {
+                  const desc = (t.description || "").toLowerCase();
+                  // Derive credit impact from description
+                  let creditImpact = null;
+                  if (desc.includes("player membership") || desc.includes("player plan")) {
+                    creditImpact = { label: "+8 hrs", positive: true };
+                  } else if (desc.includes("champion membership") || desc.includes("champion plan")) {
+                    creditImpact = { label: "Unlimited", positive: true };
+                  } else if (desc.includes("starter membership") || desc.includes("starter plan")) {
+                    creditImpact = { label: "No credits", positive: null };
+                  } else if (desc.includes("membership")) {
+                    creditImpact = { label: "Credits granted", positive: true };
+                  } else if (desc.includes("bay booking")) {
+                    // Extract duration from description if possible, otherwise -1
+                    creditImpact = { label: "-1 hr", positive: false };
+                  } else if (desc.includes("refund (credits)")) {
+                    creditImpact = { label: "+credits returned", positive: true };
+                  } else if (desc.includes("admin credit adjustment")) {
+                    // Extract delta from description e.g. "(+0.5 hr)"
+                    const match = t.description.match(/\(([+-][0-9.]+) hr\)/);
+                    creditImpact = match
+                      ? { label: match[1] + " hr", positive: Number(match[1]) > 0 }
+                      : { label: "Adjusted", positive: null };
+                  } else if (desc.includes("credits deducted")) {
+                    const match = t.description.match(/([0-9.]+) hr/);
+                    creditImpact = match
+                      ? { label: "-" + match[1] + " hrs", positive: false }
+                      : { label: "Credits deducted", positive: false };
+                  } else if (desc.includes("cancellation ·") && !desc.includes("no refund")) {
+                    creditImpact = { label: "+credits returned", positive: true };
+                  }
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f2f2f0" }}>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontSize: 13, fontWeight: 500 }}>{t.description || "Transaction"}</p>
+                        <p style={{ fontSize: 11, color: "#888" }}>{t.date}</p>
+                      </div>
+                      {creditImpact && (
+                        <span style={{
+                          fontSize: 13, fontWeight: 700, fontFamily: mono,
+                          color: creditImpact.positive === true ? GREEN : creditImpact.positive === false ? RED : "#888",
+                        }}>
+                          {creditImpact.label}
+                        </span>
+                      )}
                     </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: Number(t.amount) < 0 ? "#E03928" : "#1a1a1a", fontFamily: mono }}>
-                      {Number(t.amount) < 0 ? "-" : ""}${Math.abs(Number(t.amount || 0)).toFixed(2)}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
