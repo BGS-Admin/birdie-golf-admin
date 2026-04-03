@@ -108,17 +108,24 @@ export default function MembersTab({ customers, fire, reload }) {
   };
 
   /* ── Load transactions for a member ── */
-  const CREDIT_KEYWORDS = [
-    "membership", "bay booking", "lesson", "refund", "credit", "renewal", "admin"
-  ];
-
   const openTxns = async (cust) => {
     setTxnModal({ cust, txns: [] });
     setLoadingTxns(true);
     const all = await db.get("transactions", `customer_id=eq.${cust.id}&select=*&order=date.desc&limit=200`);
     const txns = (all || []).filter(t => {
       const desc = (t.description || "").toLowerCase();
-      return CREDIT_KEYWORDS.some(k => desc.includes(k));
+      // Exclude lesson credit transactions (not bay credits)
+      if (desc.includes("hour package") || desc.includes("-hour package")) return false;
+      if (desc.startsWith("lesson ·") || desc.startsWith("lesson booking")) return false;
+      if (desc.includes("late cancellation fee")) return false;
+      if (desc.includes("cancellation (no refund)")) return false;
+      // Include bay-credit-affecting events
+      return desc.includes("bay booking") ||
+             desc.includes("membership") ||
+             desc.includes("refund") ||
+             desc.includes("credit") ||
+             desc.includes("admin credit") ||
+             desc.includes("cancellation ·");
     });
     setTxnModal({ cust, txns });
     setLoadingTxns(false);
