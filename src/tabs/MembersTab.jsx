@@ -9,6 +9,8 @@ export default function MembersTab({ customers, fire, reload }) {
   const [cancelModal, setCancelModal] = useState(null);
   const [search,      setSearch]      = useState("");
   const [saving,      setSaving]      = useState(false);
+  const [txnModal,    setTxnModal]    = useState(null); // { cust, txns }
+  const [loadingTxns, setLoadingTxns] = useState(false);
 
   const members     = customers.filter(c => c.tier && c.tier !== "none");
   const tierMembers = members.filter(c => c.tier === memTier);
@@ -105,6 +107,25 @@ export default function MembersTab({ customers, fire, reload }) {
     reload();
   };
 
+  /* ── Load transactions for a member ── */
+  const openTxns = async (cust) => {
+    setTxnModal({ cust, txns: [] });
+    setLoadingTxns(true);
+    const txns = await db.get("transactions", `customer_id=eq.${cust.id}&select=*&order=date.desc&limit=100`);
+    setTxnModal({ cust, txns: txns || [] });
+    setLoadingTxns(false);
+  };
+
+  /* ── Adjust credits ── */
+  const adjustCredits = async (cust, delta) => {
+    const cur  = cust.bay_credits_remaining || 0;
+    const max  = cust.bay_credits_total || 8;
+    const next = Math.min(max, Math.max(0, Math.round((cur + delta) * 10) / 10));
+    if (next === cur) return;
+    await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: next });
+    reload();
+  };
+
   /* ── Derived: is the Add Member button enabled? ── */
   const canAdd = memModal?.tier && memModal?.renewalDate &&
     (memModal?.cust || (memModal?.newCust && memModal?.firstName && memModal?.phone));
@@ -163,46 +184,39 @@ export default function MembersTab({ customers, fire, reload }) {
               {c.member_since  && <p style={{ fontSize: 10, color: "#aaa" }}>Since {c.member_since}</p>}
               {c.renewal_date  && <p style={{ fontSize: 10, color: "#aaa" }}>Renews {c.renewal_date}</p>}
             </div>
-            <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
               {memTier === "player" && (
-                <>
-                  <p style={{ fontSize: 12, fontWeight: 700, color: activeTier.c, fontFamily: mono }}>
-                    {c.bay_credits_remaining || 0}/{activeTier.hrs} hrs
-                  </p>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <button
-                      style={{ width: 26, height: 26, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: RED }}
-                      onClick={async () => {
-                        const cur = c.bay_credits_remaining || 0;
-                        if (cur <= 0) return;
-                        const next = Math.max(0, Math.round((cur - 0.5) * 10) / 10);
-                        await db.patch("customers", `id=eq.${c.id}`, { bay_credits_remaining: next });
-                        reload();
-                      }}
-                    >-</button>
-                    <button
-                      style={{ width: 26, height: 26, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: activeTier.c }}
-                      onClick={async () => {
-                        const cur = c.bay_credits_remaining || 0;
-                        const max = c.bay_credits_total || activeTier.hrs;
-                        const next = Math.min(max, Math.round((cur + 0.5) * 10) / 10);
-                        if (next === cur) return;
-                        await db.patch("customers", `id=eq.${c.id}`, { bay_credits_remaining: next });
-                        reload();
-                      }}
-                    >+</button>
-                  </div>
-                </>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <button
+                    style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 15, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: RED, fontFamily: ff }}
+                    onClick={() => adjustCredits(c, -0.5)}
+                  >-</button>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: activeTier.c, fontFamily: mono, minWidth: 52, textAlign: "center" }}>
+                    {c.bay_credits_remaining || 0}/{activeTier.hrs}
+                  </span>
+                  <button
+                    style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 15, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: activeTier.c, fontFamily: ff }}
+                    onClick={() => adjustCredits(c, 0.5)}
+                  >+</button>
+                </div>
               )}
               {memTier === "champion" && (
                 <p style={{ fontSize: 12, fontWeight: 700, color: activeTier.c }}>\u221e</p>
               )}
-              <button
-                style={{ fontSize: 10, color: RED, background: "none", border: "none", cursor: "pointer", fontFamily: ff, fontWeight: 600, marginTop: 4 }}
-                onClick={() => setCancelModal(c)}
-              >
-                Cancel
-              </button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  style={{ fontSize: 10, color: "#888", background: "none", border: "1px solid #e8e8e6", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
+                  onClick={() => openTxns(c)}
+                >
+                  History
+                </button>
+                <button
+                  style={{ fontSize: 10, color: RED, background: "none", border: "none", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
+                  onClick={() => setCancelModal(c)}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         ))
@@ -383,6 +397,42 @@ export default function MembersTab({ customers, fire, reload }) {
             <button style={{ ...GS.togBtn, width: "100%", marginTop: 8 }} onClick={() => { setMemModal(null); setSearch(""); }}>
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          TRANSACTION HISTORY MODAL
+      ══════════════════════════════════════ */}
+      {txnModal && (
+        <div style={S.ov} onClick={() => setTxnModal(null)}>
+          <div style={{ ...S.mod, maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700 }}>{cn(txnModal.cust)}</h3>
+                <p style={{ fontSize: 11, color: "#888", marginTop: 2 }}>Transaction History</p>
+              </div>
+              <button style={{ background: "none", border: "none", cursor: "pointer", color: "#888" }} onClick={() => setTxnModal(null)}><span style={{ fontSize: 18, lineHeight: 1 }}>×</span></button>
+            </div>
+            {loadingTxns ? (
+              <p style={{ fontSize: 13, color: "#aaa", textAlign: "center", padding: "20px 0" }}>Loading...</p>
+            ) : txnModal.txns.length === 0 ? (
+              <p style={{ fontSize: 13, color: "#aaa", textAlign: "center", padding: "20px 0" }}>No transactions found</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                {txnModal.txns.map((t, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f2f2f0" }}>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 500 }}>{t.description || "Transaction"}</p>
+                      <p style={{ fontSize: 11, color: "#888" }}>{t.date} · {t.payment_label || "—"}</p>
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: Number(t.amount) < 0 ? "#E03928" : "#1a1a1a", fontFamily: mono }}>
+                      {Number(t.amount) < 0 ? "-" : ""}${Math.abs(Number(t.amount || 0)).toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
