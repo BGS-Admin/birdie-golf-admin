@@ -108,11 +108,19 @@ export default function MembersTab({ customers, fire, reload }) {
   };
 
   /* ── Load transactions for a member ── */
+  const CREDIT_KEYWORDS = [
+    "membership", "bay booking", "lesson", "refund", "credit", "renewal", "admin"
+  ];
+
   const openTxns = async (cust) => {
     setTxnModal({ cust, txns: [] });
     setLoadingTxns(true);
-    const txns = await db.get("transactions", `customer_id=eq.${cust.id}&select=*&order=date.desc&limit=100`);
-    setTxnModal({ cust, txns: txns || [] });
+    const all = await db.get("transactions", `customer_id=eq.${cust.id}&select=*&order=date.desc&limit=200`);
+    const txns = (all || []).filter(t => {
+      const desc = (t.description || "").toLowerCase();
+      return CREDIT_KEYWORDS.some(k => desc.includes(k));
+    });
+    setTxnModal({ cust, txns });
     setLoadingTxns(false);
   };
 
@@ -123,6 +131,13 @@ export default function MembersTab({ customers, fire, reload }) {
     const next = Math.min(max, Math.max(0, Math.round((cur + delta) * 10) / 10));
     if (next === cur) return;
     await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: next });
+    await db.post("transactions", {
+      customer_id:   cust.id,
+      description:   `Admin Credit Adjustment (${delta > 0 ? "+" : ""}${delta} hr)`,
+      date:          dateKey(new Date()),
+      amount:        0,
+      payment_label: "Admin",
+    });
     reload();
   };
 
