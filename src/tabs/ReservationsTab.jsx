@@ -328,7 +328,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
             style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }}
             onClick={reload}
           >
-            \u21bb Refresh
+            ↻ Refresh
           </button>
           <button
             style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }}
