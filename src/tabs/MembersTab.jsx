@@ -458,7 +458,8 @@ export default function MembersTab({ customers, fire, reload }) {
                     // Extract duration from description if possible, otherwise -1
                     creditImpact = { label: "-1 hr", positive: false };
                   } else if (desc.includes("refund (credits)")) {
-                    creditImpact = { label: "+credits returned", positive: true };
+                    const hrs = Number(t.amount || 0);
+                    creditImpact = { label: "+" + (hrs % 1 === 0 ? hrs : hrs.toFixed(1)) + " hr" + (hrs !== 1 ? "s" : "") + " returned", positive: true };
                   } else if (desc.includes("admin credit adjustment")) {
                     // Extract delta from description e.g. "(+0.5 hr)"
                     const match = t.description.match(/\(([+-][0-9.]+) hr\)/);
@@ -471,7 +472,11 @@ export default function MembersTab({ customers, fire, reload }) {
                       ? { label: "-" + match[1] + " hrs", positive: false }
                       : { label: "Credits deducted", positive: false };
                   } else if (desc.includes("cancellation ·") && !desc.includes("no refund")) {
-                    creditImpact = { label: "+credits returned", positive: true };
+                    const hrs = Number(t.amount || 0);
+                    const label = hrs > 0
+                      ? "+" + (hrs % 1 === 0 ? hrs : hrs.toFixed(1)) + " hr" + (hrs !== 1 ? "s" : "") + " returned"
+                      : "+credits returned";
+                    creditImpact = { label, positive: true };
                   }
                   return (
                     <div key={i} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f2f2f0" }}>
