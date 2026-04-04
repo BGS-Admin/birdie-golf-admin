@@ -9,8 +9,9 @@ export default function MembersTab({ customers, fire, reload }) {
   const [cancelModal, setCancelModal] = useState(null);
   const [search,      setSearch]      = useState("");
   const [saving,      setSaving]      = useState(false);
-  const [txnModal,    setTxnModal]    = useState(null); // { cust, txns }
-  const [loadingTxns, setLoadingTxns] = useState(false);
+  const [txnModal,      setTxnModal]      = useState(null); // { cust, txns }
+  const [loadingTxns,   setLoadingTxns]   = useState(false);
+  const [creditModal,   setCreditModal]   = useState(null); // { cust }
 
   const members     = customers.filter(c => c.tier && c.tier !== "none");
   const tierMembers = members.filter(c => c.tier === memTier);
@@ -90,18 +91,44 @@ export default function MembersTab({ customers, fire, reload }) {
   const cancelMembership = async () => {
     if (!cancelModal) return;
     setSaving(true);
+
+    const today      = new Date();
+    const renewal    = cancelModal.renewal_date ? new Date(cancelModal.renewal_date + "T12:00:00") : null;
+    const daysToRenew = renewal ? Math.ceil((renewal - today) / (1000 * 60 * 60 * 24)) : 999;
+    const within7    = daysToRenew <= 7;
+
+    // Calculate credits_valid_until
+    let creditsValidUntil = null;
+    if (renewal) {
+      if (within7) {
+        // One final cycle — credits valid until next renewal date (renewal + 1 month)
+        const nextRenewal = new Date(renewal);
+        nextRenewal.setMonth(nextRenewal.getMonth() + 1);
+        creditsValidUntil = dateKey(nextRenewal);
+      } else {
+        // Credits valid until current renewal date
+        creditsValidUntil = dateKey(renewal);
+      }
+    }
+
+    // Mark cancellation scheduled — keep tier active until expiry
     await db.patch("customers", `id=eq.${cancelModal.id}`, {
-      tier: "none",
-      bay_credits_remaining: 0,
+      cancellation_scheduled: true,
+      credits_valid_until:    creditsValidUntil,
     });
+
     await db.post("membership_history", {
       customer_id: cancelModal.id,
-      action:      "cancel",
+      action:      "cancel_scheduled",
       tier:        cancelModal.tier,
       amount:      0,
       date:        dateKey(new Date()),
     });
-    fire("Membership cancelled for " + cn(cancelModal));
+
+    const msg = within7
+      ? `Cancellation scheduled. One final cycle will run at renewal. Membership ends ${creditsValidUntil}.`
+      : `Cancellation scheduled. Membership and credits remain active until ${creditsValidUntil}.`;
+    fire(msg);
     setSaving(false);
     setCancelModal(null);
     reload();
@@ -204,22 +231,22 @@ export default function MembersTab({ customers, fire, reload }) {
               <p style={{ fontSize: 14, fontWeight: 600 }}>{cn(c)}</p>
               <p style={{ fontSize: 11, color: "#888" }}>{c.phone || ""}</p>
               {c.member_since  && <p style={{ fontSize: 10, color: "#aaa" }}>Since {c.member_since}</p>}
-              {c.renewal_date  && <p style={{ fontSize: 10, color: "#aaa" }}>Renews {c.renewal_date}</p>}
+              {c.cancellation_scheduled
+                ? <p style={{ fontSize: 10, color: "#E8890C", fontWeight: 600 }}>Ends {c.credits_valid_until || c.renewal_date}</p>
+                : c.renewal_date && <p style={{ fontSize: 10, color: "#aaa" }}>Renews {c.renewal_date}</p>}
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
               {memTier === "player" && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <button
-                    style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 15, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: RED, fontFamily: ff }}
-                    onClick={() => adjustCredits(c, -0.5)}
-                  >-</button>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: activeTier.c, fontFamily: mono, minWidth: 52, textAlign: "center" }}>
-                    {c.bay_credits_remaining || 0}/{activeTier.hrs}
+                  <span style={{ fontSize: 12, fontWeight: 700, color: activeTier.c, fontFamily: mono }}>
+                    {c.bay_credits_remaining || 0}/{activeTier.hrs} hrs
                   </span>
                   <button
-                    style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid #e8e8e6", background: "#f8f8f6", fontSize: 15, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: activeTier.c, fontFamily: ff }}
-                    onClick={() => adjustCredits(c, 0.5)}
-                  >+</button>
+                    style={{ fontSize: 10, color: activeTier.c, background: "none", border: "1px solid #e8e8e6", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
+                    onClick={() => setCreditModal({ cust: c })}
+                  >
+                    Adjust
+                  </button>
                 </div>
               )}
               {memTier === "champion" && (
@@ -502,6 +529,46 @@ export default function MembersTab({ customers, fire, reload }) {
       )}
 
       {/* ══════════════════════════════════════
+          CREDIT ADJUSTMENT MODAL
+      ══════════════════════════════════════ */}
+      {creditModal && (() => {
+        const c = creditModal.cust;
+        const cur = c.bay_credits_remaining || 0;
+        const max = c.bay_credits_total || 8;
+        const deltas = [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2];
+        return (
+          <div style={S.ov} onClick={() => setCreditModal(null)}>
+            <div style={{ ...S.mod, maxWidth: 360 }} onClick={e => e.stopPropagation()}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Adjust Credits</h3>
+              <p style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>{cn(c)} · {cur}/{max} hrs remaining</p>
+              <label style={{ fontSize: 11, fontWeight: 700, color: "#888", letterSpacing: 1, marginBottom: 8, display: "block" }}>SELECT ADJUSTMENT</label>
+              <select
+                style={{ width: "100%", padding: "10px 12px", border: "1px solid #e8e8e6", borderRadius: 10, fontSize: 14, fontFamily: ff, color: "#1a1a1a", background: "#fff", marginBottom: 16 }}
+                defaultValue=""
+                onChange={async e => {
+                  const delta = Number(e.target.value);
+                  if (!delta) return;
+                  await adjustCredits(c, delta);
+                  setCreditModal(null);
+                }}
+              >
+                <option value="" disabled>Choose amount...</option>
+                {deltas.filter(d => {
+                  const next = Math.round((cur + d) * 10) / 10;
+                  return next >= 0 && next <= max;
+                }).map(d => (
+                  <option key={d} value={d}>
+                    {d > 0 ? "+" : ""}{d} hr{Math.abs(d) !== 1 ? "s" : ""} → {Math.round((cur + d) * 10) / 10} remaining
+                  </option>
+                ))}
+              </select>
+              <button style={{ ...GS.togBtn, width: "100%" }} onClick={() => setCreditModal(null)}>Cancel</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ══════════════════════════════════════
           CANCEL CONFIRMATION MODAL
       ══════════════════════════════════════ */}
       {cancelModal && (
@@ -516,9 +583,23 @@ export default function MembersTab({ customers, fire, reload }) {
                 <p style={{ fontSize: 12, color: "#888" }}>{cn(cancelModal)}</p>
               </div>
             </div>
-            <p style={{ fontSize: 13, color: "#555", marginBottom: 20 }}>
-              This will immediately remove their {cancelModal.tier} membership and zero out their bay credits. This action cannot be undone.
-            </p>
+            {(() => {
+              const today = new Date();
+              const renewal = cancelModal.renewal_date ? new Date(cancelModal.renewal_date + "T12:00:00") : null;
+              const daysToRenew = renewal ? Math.ceil((renewal - today) / (1000 * 60 * 60 * 24)) : 999;
+              const within7 = daysToRenew <= 7;
+              const nextRenewal = renewal ? new Date(new Date(renewal).setMonth(renewal.getMonth() + 1)) : null;
+              return (
+                <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 20 }}>
+                  <p style={{ fontSize: 13, color: "#555", marginBottom: 8 }}>
+                    {within7
+                      ? `Renewal is in ${daysToRenew} day${daysToRenew !== 1 ? "s" : ""} — one final billing cycle will run. Membership and credits remain active until ${nextRenewal ? dateKey(nextRenewal) : "—"}.`
+                      : `Renewal is in ${daysToRenew} days. Membership and credits remain active until ${cancelModal.renewal_date}.`}
+                  </p>
+                  <p style={{ fontSize: 11, color: "#aaa" }}>The member will not be charged or renewed after that date.</p>
+                </div>
+              );
+            })()}
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...S.bDanger, flex: 1 }} onClick={cancelMembership} disabled={saving}>
                 {saving ? "Cancelling..." : "Yes, Cancel Membership"}
