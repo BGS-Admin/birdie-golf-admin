@@ -236,10 +236,10 @@ export default function MembersTab({ customers, fire, reload }) {
                 : c.renewal_date && <p style={{ fontSize: 10, color: "#aaa" }}>Renews {c.renewal_date}</p>}
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-              {memTier === "player" && (
+              {(memTier === "player" || memTier === "early_birdie") && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: activeTier.c, fontFamily: mono }}>
-                    {c.bay_credits_remaining || 0}/{activeTier.hrs} hrs
+                    {memTier === "early_birdie" ? "Unlimited (7am–4pm)" : (c.bay_credits_remaining || 0) + "/" + activeTier.hrs + " hrs"}
                   </span>
                   <button
                     style={{ fontSize: 10, color: activeTier.c, background: "none", border: "1px solid #e8e8e6", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
