@@ -672,8 +672,14 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
-                {/* Credits banner */}
-                {creditInfo && creditInfo.used > 0 && (
+                {/* Credits banner — shown for lesson bookings with active package */}
+                {creditInfo && creditInfo.isLesson && creditInfo.used > 0 ? (
+                  <div style={{ padding: "8px 12px", background: GREEN + "14", borderRadius: 8, borderLeft: "3px solid " + GREEN }}>
+                    <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
+                      1 lesson credit applied · {creditInfo.afterDeduction} remaining
+                    </span>
+                  </div>
+                ) : creditInfo && !creditInfo.isLesson && creditInfo.used > 0 && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: GREEN + "14", borderRadius: 8 }}>
                     <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
                       {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.afterDeduction} remaining)
@@ -684,8 +690,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                   </div>
                 )}
 
-                {/* Card picker */}
-                {loadingCards ? (
+                {/* Card picker — hidden for lesson bookings covered by credits */}
+                {!(creditInfo && creditInfo.isLesson && creditInfo.used > 0) && (loadingCards ? (
                   <p style={{ fontSize: 12, color: "#aaa" }}>Loading cards...</p>
                 ) : custCards.length === 0 ? (
                   <p style={{ fontSize: 12, color: "#aaa" }}>No cards on file — collect payment in person or ask customer to add card in their app.</p>
@@ -709,7 +715,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                       Pay in person
                     </button>
                   </div>
-                )}
+                ))}
 
                 {/* Amount preview */}
                 {selB.cardId && selB.cardId !== "in_person" && (() => {
