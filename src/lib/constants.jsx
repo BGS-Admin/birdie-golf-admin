@@ -9,15 +9,16 @@ export const PURPLE = "#5B6DCD";
 export const ORANGE = "#E8890C";
 export const RED    = "#E03928";
 
-export const TC = { none: "#888", starter: "#4A8B6E", player: GREEN, champion: "#124A2B" };
-export const TN = { none: "Non-Member", starter: "Starter", player: "Player", champion: "Champion" };
-export const TB = { starter: "STR", player: "PLR", champion: "CHP" };
+export const TC = { none: "#888", starter: "#7AB89A", early_birdie: "#4A8B6E", player: GREEN, champion: "#124A2B" };
+export const TN = { none: "Non-Member", starter: "Starter", early_birdie: "Early Birdie", player: "Player", champion: "Champion" };
+export const TB = { starter: "STR", early_birdie: "EBD", player: "PLR", champion: "CHP" };
 export const BK_C = { bay_member: GREEN, bay_walkin: "#888", lesson: PURPLE };
 
 export const TIERS = [
-  { id: "starter",  n: "Starter",  p: 45,  c: "#4A8B6E", badge: "STR", hrs: 0,  perks: ["20% off hourly bay rate"] },
-  { id: "player",   n: "Player",   p: 200, c: GREEN,      badge: "PLR", hrs: 8,  perks: ["8 hrs bay rental/mo", "20% off additional hours", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
-  { id: "champion", n: "Champion", p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, perks: ["Unlimited bay rental (max 2hr/booking)", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
+  { id: "starter",      n: "Starter",      p: 45,  c: "#7AB89A", badge: "STR", hrs: 0,  perks: ["20% off hourly bay rate"] },
+  { id: "early_birdie", n: "Early Birdie", p: 150, c: "#4A8B6E", badge: "EBD", hrs: -1, perks: ["Unlimited bay access Mon-Fri 7am-4pm", "Full rate applies outside those hours", "Members-only events"] },
+  { id: "player",       n: "Player",       p: 200, c: GREEN,      badge: "PLR", hrs: 8,  perks: ["8 hrs bay rental/mo", "20% off additional hours", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
+  { id: "champion",     n: "Champion",     p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, perks: ["Unlimited bay rental (max 2hr/booking)", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
 ];
 
 // ⚠️  PRE-LAUNCH TODO: Add PIN auth (Daniel=1212, Marco=0101, Front Desk=2025 from Supabase)

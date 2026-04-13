@@ -477,6 +477,8 @@ export default function MembersTab({ customers, fire, reload }) {
                     creditImpact = { label: "+8 hrs", positive: true };
                   } else if (desc.includes("champion membership") || desc.includes("champion plan")) {
                     creditImpact = { label: "Unlimited", positive: true };
+                  } else if (desc.includes("early birdie membership") || desc.includes("early birdie plan")) {
+                    creditImpact = { label: "Unlimited (7am–4pm)", positive: true };
                   } else if (desc.includes("starter membership") || desc.includes("starter plan")) {
                     creditImpact = { label: "No credits", positive: null };
                   } else if (desc.includes("membership")) {
