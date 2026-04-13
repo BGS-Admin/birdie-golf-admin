@@ -20,10 +20,14 @@ export const TIERS = [
   { id: "champion", n: "Champion", p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, perks: ["Unlimited bay rental (max 2hr/booking)", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
 ];
 
+// ⚠️  PRE-LAUNCH TODO: Add PIN auth (Daniel=1212, Marco=0101, Front Desk=2025 from Supabase)
 export const TEAM = [
-  { id: "TM4y", name: "Daniel Duran",   title: "Owner" },
-  { id: "TMBe", name: "Marco Montilla", title: "Owner" },
+  { id: "TM4y", name: "Daniel Duran",   title: "Owner",      role: "owner"      },
+  { id: "TMBe", name: "Marco Montilla", title: "Owner",      role: "owner"      },
+  { id: "TMfd", name: "Front Desk",     title: "Front Desk", role: "front_desk" },
 ];
+
+export const FD_LOCK_MINUTES = 120; // Front Desk auto-lock duration (minutes)
 
 export const COACHES = [
   { id: "SE", name: "Santiago Espinoza" },
@@ -55,8 +59,16 @@ export const fmtShort = (d) => d.toLocaleDateString("en-US", { weekday: "short",
 export const fmtFull  = (d) => d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 export const addDays  = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
 export const isWknd   = (d) => d.getDay() === 0 || d.getDay() === 6;
-export const getSlots = (d) => isWknd(d) ? SLOTS.filter(s => { const h = toH(s); return h >= 9 && h < 21; }) : SLOTS;
-export const cn       = (c) => ((c.first_name || "") + " " + (c.last_name || "")).trim();
+export const getSlots = (d, hoursConfig) => {
+  if (hoursConfig) {
+    const isWeekend = isWknd(d);
+    const open  = isWeekend ? toH(hoursConfig.weekend_open  || "9:00 AM")  : toH(hoursConfig.weekday_open  || "7:00 AM");
+    const close = isWeekend ? toH(hoursConfig.weekend_close || "9:00 PM")  : toH(hoursConfig.weekday_close || "10:00 PM");
+    return SLOTS.filter(s => { const h = toH(s); return h >= open && h < close; });
+  }
+  return isWknd(d) ? SLOTS.filter(s => { const h = toH(s); return h >= 9 && h < 21; }) : SLOTS;
+};
+export const cn = (c) => ((c.first_name || "") + " " + (c.last_name || "")).trim();
 
 /* ─── Icons ─── */
 const Ic = ({ d, z = 18 }) => (
@@ -82,6 +94,8 @@ export const X = {
   edit:   z => <Ic z={z} d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />,
   trash:  z => <Ic z={z} d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />,
   warn:   z => <Ic z={z} d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01" />,
+  lock:   z => <Ic z={z} d="M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2zM7 11V7a5 5 0 0110 0v4" />,
+  log:    z => <Ic z={z} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />,
 };
 
 /* ─── Shared styles ─── */
