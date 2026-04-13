@@ -25,19 +25,25 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   const [loadingCards, setLoadingCards] = useState(false);
   const [refundModal, setRefundModal] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [lessonPkg,  setLessonPkg]  = useState(null); // active lesson package for selected customer
 
   const closeModal = useCallback(() => {
     setSelB(null);
     setCustSearch("");
     setCustCards([]);
+    setLessonPkg(null);
     setRefundModal(null);
   }, []);
 
   /* ── fetch cards when a customer is selected ── */
   const loadCards = useCallback(async (custId) => {
     setLoadingCards(true);
-    const cards = await db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`);
+    const [cards, pkgs] = await Promise.all([
+      db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`),
+      db.get("lesson_packages", `customer_id=eq.${custId}&status=eq.active&select=*&order=purchase_date.desc`),
+    ]);
     setCustCards(cards || []);
+    setLessonPkg(pkgs?.[0] || null);
     setLoadingCards(false);
   }, []);
 
@@ -77,13 +83,19 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   };
 
   /* ── credit calculation ── */
-  const getCreditInfo = (cust, durSlots) => {
+  const getCreditInfo = (cust, durSlots, type, lPkg) => {
     if (!cust || !cust.tier || cust.tier === "none" || cust.tier === "starter") return null;
+    if (type === "lesson") {
+      if (!lPkg || lPkg.remaining_credits <= 0) return null;
+      const avail = lPkg.remaining_credits;
+      const used  = Math.min(avail, 1); // 1 lesson credit per session
+      return { avail, needed: 1, used, afterDeduction: avail - used, isLesson: true };
+    }
     const avail = cust.bay_credits_remaining || 0;
-    const needed = durSlots * 0.5; // 0.5 credit per slot
+    const needed = durSlots * 0.5;
     const used   = Math.min(avail, needed);
     const remain = needed - used;
-    return { avail, needed, used, remain };
+    return { avail, needed, used, remain, afterDeduction: avail - used, isLesson: false };
   };
 
   /* ── open new booking from grid click ── */
@@ -163,7 +175,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
     }
 
     const durSlots   = DUR_MAP[selB.dur] || 2;
-    const creditInfo = custObj ? getCreditInfo(custObj, durSlots) : null;
+    const creditInfo = custObj ? getCreditInfo(custObj, durSlots, selB.type, lessonPkg) : null;
     const creditsUsed = creditInfo ? creditInfo.used : 0;
 
     // Calculate charge amount
@@ -210,8 +222,14 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
     // Deduct credits
     if (creditsUsed > 0 && custObj?.id) {
-      const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
-      await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
+      if (selB.type === "lesson" && lessonPkg?.id) {
+        const newRemaining = Math.max(0, (lessonPkg.remaining_credits || 0) - creditsUsed);
+        await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, { remaining_credits: newRemaining });
+        if (newRemaining === 0) await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, { status: "used" });
+      } else {
+        const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
+        await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
+      }
     }
 
     // Transaction record
@@ -304,7 +322,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
   /* ── current credit preview ── */
   const selCust    = selB?.custObj;
-  const creditInfo = selB ? getCreditInfo(selCust, DUR_MAP[selB.dur] || 2) : null;
+  const creditInfo = selB ? getCreditInfo(selCust, DUR_MAP[selB.dur] || 2, selB.type, lessonPkg) : null;
 
   /* ════════════════════════════════════════
      RENDER
@@ -658,7 +676,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                 {creditInfo && creditInfo.used > 0 && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: GREEN + "14", borderRadius: 8 }}>
                     <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
-                      {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.avail} available)
+                      {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.afterDeduction} remaining)
                     </span>
                     {creditInfo.remain > 0 && (
                       <span style={{ fontSize: 11, color: "#888" }}>· {creditInfo.remain}hr charged to card</span>
