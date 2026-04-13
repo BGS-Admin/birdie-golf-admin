@@ -15,10 +15,9 @@ export const TB = { starter: "STR", player: "PLR", champion: "CHP" };
 export const BK_C = { bay_member: GREEN, bay_walkin: "#888", lesson: PURPLE };
 
 export const TIERS = [
-  { id: "starter",      n: "Starter",      p: 45,  c: "#4A8B6E", badge: "STR", hrs: 0,  perks: ["20% off hourly bay rate"] },
-  { id: "early_birdie", n: "Early Birdie", p: 150, c: ORANGE,    badge: "EBD", hrs: -1, enrollmentFee: 50, perks: ["Unlimited bay access Mon–Fri 7am–4pm", "Full rate outside that window", "Members-only events"] },
-  { id: "player",       n: "Player",       p: 200, c: GREEN,      badge: "PLR", hrs: 8,  enrollmentFee: 75, perks: ["8 hrs bay rental/mo", "20% off additional hours", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
-  { id: "champion",     n: "Champion",     p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, perks: ["Unlimited bay rental (max 2hr/booking)", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
+  { id: "starter",  n: "Starter",  p: 45,  c: "#4A8B6E", badge: "STR", hrs: 0,  perks: ["20% off hourly bay rate"] },
+  { id: "player",   n: "Player",   p: 200, c: GREEN,      badge: "PLR", hrs: 8,  perks: ["8 hrs bay rental/mo", "20% off additional hours", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
+  { id: "champion", n: "Champion", p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, perks: ["Unlimited bay rental (max 2hr/booking)", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
 ];
 
 export const TEAM = [
@@ -51,7 +50,7 @@ export function toH(s) {
   if (ap === "AM" && h === 12) h = 0;
   return h + m / 60;
 }
-export const dateKey  = (d) => d.toISOString().split("T")[0];
+export const dateKey  = (d) => { const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,"0"), day = String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; };
 export const fmtShort = (d) => d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 export const fmtFull  = (d) => d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 export const addDays  = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
