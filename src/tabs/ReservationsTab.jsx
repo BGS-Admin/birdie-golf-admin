@@ -396,12 +396,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
           <button style={S.navArr} onClick={() => setResDate(addDays(resDate, 1))}>{X.chevR(18)}</button>
           <button style={{ ...S.navArr, fontSize: 11, width: "auto", padding: "0 12px" }} onClick={() => setResDate(new Date())}>Today</button>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {/* View toggle */}
-          <div style={{ display: "flex", background: "#f0f0ee", borderRadius: 8, padding: 3, gap: 3 }}>
-            <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "calendar" ? "#fff" : "transparent", color: resView === "calendar" ? "#1a1a1a" : "#888", boxShadow: resView === "calendar" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => setResView("calendar")}>Calendar</button>
-            <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "changes" ? "#fff" : "transparent", color: resView === "changes" ? "#1a1a1a" : "#888", boxShadow: resView === "changes" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => { setResView("changes"); loadChangeLog(); }}>Changes & Cancellations</button>
-          </div>
+        <div style={{ display: "flex", gap: 8 }}>
           <button
             style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }}
             onClick={reload}
@@ -415,6 +410,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
             {X.plus(14)} New Booking
           </button>
         </div>
+      </div>
+
+      {/* ── View toggle ── */}
+      <div style={{ display: "flex", gap: 3, background: "#f0f0ee", borderRadius: 8, padding: 3, marginBottom: 14, alignSelf: "flex-start" }}>
+        <button style={{ padding: "6px 16px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "calendar" ? "#fff" : "transparent", color: resView === "calendar" ? "#1a1a1a" : "#888", boxShadow: resView === "calendar" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => setResView("calendar")}>Calendar</button>
+        <button style={{ padding: "6px 16px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "changes" ? "#fff" : "transparent", color: resView === "changes" ? "#1a1a1a" : "#888", boxShadow: resView === "changes" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => { setResView("changes"); loadChangeLog(); }}>Changes & Cancellations</button>
       </div>
 
       {resView === "calendar" && (
