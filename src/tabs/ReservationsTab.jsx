@@ -17,33 +17,60 @@ function calcAmount(durSlots, date, cfg) {
   return hrs * rate;
 }
 
-export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, fire, reload }) {
+export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, hoursConfig, fire, reload, logActivity }) {
   const [resDate,   setResDate]   = useState(new Date());
   const [selB,      setSelB]      = useState(null);   // booking modal state
   const [custSearch,setCustSearch]= useState("");
   const [custCards, setCustCards] = useState([]);     // payment methods for selected customer
   const [loadingCards, setLoadingCards] = useState(false);
   const [refundModal, setRefundModal] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [lessonPkg,  setLessonPkg]  = useState(null); // active lesson package for selected customer
+  const [saving,    setSaving]    = useState(false);
+  const [resView,   setResView]   = useState("calendar");
+  const [changeLog, setChangeLog] = useState([]);
+  const [logLoading,setLogLoading]= useState(false);
+  const [histModal, setHistModal] = useState(null);
+  const [histLog,   setHistLog]   = useState([]);
 
   const closeModal = useCallback(() => {
     setSelB(null);
     setCustSearch("");
     setCustCards([]);
-    setLessonPkg(null);
     setRefundModal(null);
   }, []);
+
+  /* ── booking change log helpers ── */
+  const logBkChange = async (bookingId, action, detail) => {
+    await db.post("booking_change_log", { booking_id: bookingId, action, detail: detail || "", changed_at: new Date().toISOString() });
+    await logActivity?.(action + (detail ? ": " + detail : ""));
+  };
+  const loadChangeLog = async () => {
+    setLogLoading(true);
+    const dk = dateKey(resDate);
+    const dateBks = bookings.filter(b => b.date === dk);
+    if (!dateBks.length) { setChangeLog([]); setLogLoading(false); return; }
+    const ids = dateBks.map(b => b.id).join(",");
+    const rows = await db.get("booking_change_log", "booking_id=in.(" + ids + ")&select=*&order=changed_at.desc");
+    setChangeLog((rows || []).map(r => {
+      const bk = dateBks.find(b => b.id === r.booking_id);
+      const cust = bk ? customers.find(c => c.id === bk.customer_id) : null;
+      return { ...r, customerName: cust ? ((cust.first_name||"")+" "+(cust.last_name||"")).trim() : "Walk-in", bay: bk?.bay, type: bk?.type };
+    }));
+    setLogLoading(false);
+  };
+  const loadBookingHistory = async (bookingId) => {
+    const rows = await db.get("booking_change_log", "booking_id=eq." + bookingId + "&select=*&order=changed_at.asc");
+    setHistLog(rows || []);
+  };
+  const fmtLogTime = (iso) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-US",{month:"short",day:"numeric"}) + " · " + d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+  };
 
   /* ── fetch cards when a customer is selected ── */
   const loadCards = useCallback(async (custId) => {
     setLoadingCards(true);
-    const [cards, pkgs] = await Promise.all([
-      db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`),
-      db.get("lesson_packages", `customer_id=eq.${custId}&status=eq.active&select=*&order=purchase_date.desc`),
-    ]);
+    const cards = await db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`);
     setCustCards(cards || []);
-    setLessonPkg(pkgs?.[0] || null);
     setLoadingCards(false);
   }, []);
 
@@ -83,19 +110,13 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   };
 
   /* ── credit calculation ── */
-  const getCreditInfo = (cust, durSlots, type, lPkg) => {
+  const getCreditInfo = (cust, durSlots) => {
     if (!cust || !cust.tier || cust.tier === "none" || cust.tier === "starter") return null;
-    if (type === "lesson") {
-      if (!lPkg || lPkg.remaining_credits <= 0) return null;
-      const avail = lPkg.remaining_credits;
-      const used  = Math.min(avail, 1); // 1 lesson credit per session
-      return { avail, needed: 1, used, afterDeduction: avail - used, isLesson: true };
-    }
     const avail = cust.bay_credits_remaining || 0;
-    const needed = durSlots * 0.5;
+    const needed = durSlots * 0.5; // 0.5 credit per slot
     const used   = Math.min(avail, needed);
     const remain = needed - used;
-    return { avail, needed, used, remain, afterDeduction: avail - used, isLesson: false };
+    return { avail, needed, used, remain };
   };
 
   /* ── open new booking from grid click ── */
@@ -175,7 +196,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
     }
 
     const durSlots   = DUR_MAP[selB.dur] || 2;
-    const creditInfo = custObj ? getCreditInfo(custObj, durSlots, selB.type, lessonPkg) : null;
+    const creditInfo = custObj ? getCreditInfo(custObj, durSlots) : null;
     const creditsUsed = creditInfo ? creditInfo.used : 0;
 
     // Calculate charge amount
@@ -222,14 +243,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
     // Deduct credits
     if (creditsUsed > 0 && custObj?.id) {
-      if (selB.type === "lesson" && lessonPkg?.id) {
-        const newRemaining = Math.max(0, (lessonPkg.remaining_credits || 0) - creditsUsed);
-        await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, { remaining_credits: newRemaining });
-        if (newRemaining === 0) await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, { status: "used" });
-      } else {
-        const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
-        await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
-      }
+      const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
+      await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
     }
 
     // Transaction record
@@ -244,7 +259,14 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
       });
     }
 
-    fire("Booking created \u2713");
+    // Log creation — get the booking ID from the result
+    const created = await db.get("bookings", "customer_id=eq." + (custId||"null") + "&order=created_at.desc&limit=1&select=id,bay,date,start_time,type");
+    if (created?.[0]?.id) {
+      const bk = created[0];
+      const custName = custObj ? ((custObj.first_name||"")+" "+(custObj.last_name||"")).trim() : "Walk-in";
+      await logBkChange(bk.id, "Created", custName + " · Bay " + bk.bay + " · " + bk.start_time);
+    }
+    fire("Booking created ✓");
     setSaving(false);
     closeModal();
     reload();
@@ -254,31 +276,35 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   const saveEdits = async () => {
     setSaving(true);
     const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
-    const newBay  = selB.bay;
-    const newTime = selB.time || selB.start_time;
-    const newDate = selB.date || dateKey(resDate);
-
-    // Check for bay conflicts — block if another confirmed booking occupies any portion of this time on the target bay
+    const newBay   = selB.bay;
+    const newTime  = selB.time || selB.start_time;
+    const newDate  = selB.date || dateKey(resDate);
     const newStart = toH(newTime);
     const newEnd   = newStart + durSlots * 0.5;
-    const conflict = bookings.find(b =>
-      b.id !== selB.id &&               // not this booking
-      b.bay === newBay &&               // same bay
-      b.date === newDate &&             // same date
-      b.status !== "cancelled" &&       // not cancelled
-      (() => {
-        const bStart = toH(b.start_time);
-        const bEnd   = bStart + (b.duration_slots || 2) * 0.5;
-        return newStart < bEnd && newEnd > bStart; // overlap check
-      })()
-    );
 
+    // Block bay change if another booking overlaps on the target bay
+    const conflict = bookings.find(b =>
+      b.id !== selB.id && b.bay === newBay && b.date === newDate &&
+      b.status !== "cancelled" &&
+      (() => { const bs = toH(b.start_time), be = bs + (b.duration_slots||2)*0.5; return newStart < be && newEnd > bs; })()
+    );
     if (conflict) {
-      const cust = customers.find(c => c.id === conflict.customer_id);
-      fire(`Bay ${newBay} is already booked at ${conflict.start_time}${cust ? " · " + ((cust.first_name || "") + " " + (cust.last_name || "")).trim() : ""}. Choose a different bay.`);
+      const cc = customers.find(c => c.id === conflict.customer_id);
+      fire(`Bay ${newBay} is already booked at ${conflict.start_time}${cc ? " · " + ((cc.first_name||"")+" "+(cc.last_name||"")).trim() : ""}. Choose a different bay.`);
       setSaving(false);
       return;
     }
+
+    // Build detailed change log
+    const orig = bookings.find(b => b.id === selB.id);
+    const changes = [];
+    if (orig) {
+      if (orig.bay !== newBay) changes.push(`Bay ${orig.bay} → Bay ${newBay}`);
+      if (orig.start_time !== newTime) changes.push(`${orig.start_time} → ${newTime}`);
+      if ((orig.duration_slots||2) !== durSlots) changes.push(`${slotsToLabel(orig.duration_slots||2)} → ${slotsToLabel(durSlots)}`);
+      if (orig.status !== selB.status) changes.push(`Status: ${orig.status} → ${selB.status}`);
+    }
+    const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
 
     await db.patch("bookings", `id=eq.${selB.id}`, {
       status:         selB.status,
@@ -287,7 +313,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
       duration_slots: durSlots,
       admin_notes:    selB.notes || "",
     });
-    await logActivity?.(`Updated booking: ${selB.type} · Bay ${newBay} · ${newDate} · ${newTime}`);
+    await logBkChange(selB.id, "Updated", custName + " · " + (changes.length ? changes.join(", ") : "Saved"));
     fire("Booking updated ✓");
     setSaving(false);
     closeModal();
@@ -298,6 +324,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   const cancelBooking = async () => {
     setSaving(true);
     await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
+    const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
+    await logBkChange(selB.id, "Cancelled", custName + " · Bay " + selB.bay + " · " + (selB.start_time||selB.time));
     fire("Booking cancelled");
     setSaving(false);
     closeModal();
@@ -349,7 +377,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
   /* ── current credit preview ── */
   const selCust    = selB?.custObj;
-  const creditInfo = selB ? getCreditInfo(selCust, DUR_MAP[selB.dur] || 2, selB.type, lessonPkg) : null;
+  const creditInfo = selB ? getCreditInfo(selCust, DUR_MAP[selB.dur] || 2) : null;
 
   /* ════════════════════════════════════════
      RENDER
@@ -368,7 +396,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
           <button style={S.navArr} onClick={() => setResDate(addDays(resDate, 1))}>{X.chevR(18)}</button>
           <button style={{ ...S.navArr, fontSize: 11, width: "auto", padding: "0 12px" }} onClick={() => setResDate(new Date())}>Today</button>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* View toggle */}
+          <div style={{ display: "flex", background: "#f0f0ee", borderRadius: 8, padding: 3, gap: 3 }}>
+            <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "calendar" ? "#fff" : "transparent", color: resView === "calendar" ? "#1a1a1a" : "#888", boxShadow: resView === "calendar" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => setResView("calendar")}>Calendar</button>
+            <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "changes" ? "#fff" : "transparent", color: resView === "changes" ? "#1a1a1a" : "#888", boxShadow: resView === "changes" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => { setResView("changes"); loadChangeLog(); }}>Changes & Cancellations</button>
+          </div>
           <button
             style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }}
             onClick={reload}
@@ -384,6 +417,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
         </div>
       </div>
 
+      {resView === "calendar" && (
+        <>
       {/* ── Legend ── */}
       <div style={{ display: "flex", gap: 14, marginBottom: 12, flexWrap: "wrap" }}>
         {[
@@ -643,32 +678,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
               <div>
                 <label style={GS.label}>BAY</label>
                 <div style={{ display: "flex", gap: 3 }}>
-                  {[1, 2, 3, 4, 5].map(b => {
-                    const editDate  = selB.date || dateKey(resDate);
-                    const editTime  = selB.time || selB.start_time;
-                    const editSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
-                    const eStart    = editTime ? toH(editTime) : null;
-                    const eEnd      = eStart ? eStart + editSlots * 0.5 : null;
-                    const isTaken   = eStart !== null && b !== selB.bay && bookings.some(bk =>
-                      bk.id !== selB.id && bk.bay === b && bk.date === editDate &&
-                      bk.status !== "cancelled" &&
-                      toH(bk.start_time) < eEnd && (toH(bk.start_time) + (bk.duration_slots || 2) * 0.5) > eStart
-                    );
-                    const isSel = selB.bay === b;
-                    return (
-                      <button
-                        key={b}
-                        title={isTaken ? `Bay ${b} is already booked during this time` : ""}
-                        style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", position: "relative",
-                          ...(isSel ? { background: GREEN, color: "#fff", borderColor: GREEN } :
-                             isTaken ? { background: "#fff0f0", color: "#E03928", borderColor: "#E0392844", cursor: "not-allowed" } : {})
-                        }}
-                        onClick={() => { if (!isTaken) setSelB(p => ({ ...p, bay: b })); }}
-                      >
-                        {b}{isTaken ? " ✕" : ""}
-                      </button>
-                    );
-                  })}
+                  {[1, 2, 3, 4, 5].map(b => (
+                    <button
+                      key={b}
+                      style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", ...(selB.bay === b ? { background: GREEN, color: "#fff" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, bay: b }))}
+                    >
+                      {b}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
@@ -716,17 +734,11 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
-                {/* Credits banner — shown for lesson bookings with active package */}
-                {creditInfo && creditInfo.isLesson && creditInfo.used > 0 ? (
-                  <div style={{ padding: "8px 12px", background: GREEN + "14", borderRadius: 8, borderLeft: "3px solid " + GREEN }}>
-                    <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
-                      1 lesson credit applied · {creditInfo.afterDeduction} remaining
-                    </span>
-                  </div>
-                ) : creditInfo && !creditInfo.isLesson && creditInfo.used > 0 && (
+                {/* Credits banner */}
+                {creditInfo && creditInfo.used > 0 && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: GREEN + "14", borderRadius: 8 }}>
                     <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
-                      {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.afterDeduction} remaining)
+                      {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.avail} available)
                     </span>
                     {creditInfo.remain > 0 && (
                       <span style={{ fontSize: 11, color: "#888" }}>· {creditInfo.remain}hr charged to card</span>
@@ -734,8 +746,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                   </div>
                 )}
 
-                {/* Card picker — hidden for lesson bookings covered by credits */}
-                {!(creditInfo && creditInfo.isLesson && creditInfo.used > 0) && (loadingCards ? (
+                {/* Card picker */}
+                {loadingCards ? (
                   <p style={{ fontSize: 12, color: "#aaa" }}>Loading cards...</p>
                 ) : custCards.length === 0 ? (
                   <p style={{ fontSize: 12, color: "#aaa" }}>No cards on file — collect payment in person or ask customer to add card in their app.</p>
@@ -759,7 +771,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                       Pay in person
                     </button>
                   </div>
-                ))}
+                )}
 
                 {/* Amount preview */}
                 {selB.cardId && selB.cardId !== "in_person" && (() => {
@@ -858,6 +870,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
                   </button>
                 </>
               )}
+              <button style={{ ...GS.togBtn, padding: "10px 14px" }} onClick={async () => { await loadBookingHistory(selB.id); setHistModal(selB.id); }}>History</button>
               <button style={{ ...GS.togBtn, padding: "10px 14px" }} onClick={closeModal}>Close</button>
             </div>
 
@@ -901,4 +914,75 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
 
     </div>
   );
-}
+}        </>
+      )}
+
+      {/* ── CHANGES & CANCELLATIONS VIEW ── */}
+      {resView === "changes" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <p style={{ fontSize: 13, color: "#888" }}>All changes and cancellations for {fmtFull(resDate)}</p>
+            <button style={{ ...GS.togBtn, fontSize: 11 }} onClick={loadChangeLog}>↻ Refresh</button>
+          </div>
+          {logLoading ? (
+            <p style={{ color: "#aaa", fontSize: 13 }}>Loading...</p>
+          ) : changeLog.length === 0 ? (
+            <div style={S.empty}>No changes or cancellations logged for this day.</div>
+          ) : (
+            <div style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, overflow: "hidden" }}>
+              {changeLog.map((row, i) => {
+                const actionColor = row.action === "Cancelled" ? RED : row.action === "Created" ? GREEN : ORANGE;
+                return (
+                  <div key={row.id || i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 16px", borderBottom: i < changeLog.length - 1 ? "1px solid #f2f2f0" : "none" }}>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: actionColor, marginTop: 5, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: actionColor }}>{row.action}</span>
+                        {row.customerName && <span style={{ fontSize: 12, color: "#555" }}>{row.customerName}</span>}
+                        {row.bay && <span style={{ fontSize: 11, color: "#aaa" }}>· Bay {row.bay}</span>}
+                      </div>
+                      {row.detail && <p style={{ fontSize: 11, color: "#888" }}>{row.detail}</p>}
+                    </div>
+                    <p style={{ fontSize: 11, color: "#aaa", flexShrink: 0 }}>{fmtLogTime(row.changed_at)}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+
+      {/* ── Booking History Modal ── */}
+      {histModal && (
+        <div style={S.ov} onClick={() => setHistModal(null)}>
+          <div style={{ ...S.mod, maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700 }}>Booking History</h3>
+              <button style={{ background: "none", border: "none", cursor: "pointer", color: "#888" }} onClick={() => setHistModal(null)}>✕</button>
+            </div>
+            {histLog.length === 0 ? (
+              <p style={{ color: "#aaa", fontSize: 13 }}>No history logged for this booking.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 0, border: "1px solid #e8e8e6", borderRadius: 12, overflow: "hidden" }}>
+                {histLog.map((row, i) => {
+                  const actionColor = row.action === "Cancelled" ? RED : row.action === "Created" ? GREEN : ORANGE;
+                  return (
+                    <div key={row.id || i} style={{ display: "flex", gap: 12, padding: "10px 14px", borderBottom: i < histLog.length - 1 ? "1px solid #f2f2f0" : "none", background: "#fff" }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: actionColor, marginTop: 4, flexShrink: 0 }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: actionColor }}>{row.action}</span>
+                          <span style={{ fontSize: 11, color: "#aaa" }}>{fmtLogTime(row.changed_at)}</span>
+                        </div>
+                        {row.detail && <p style={{ fontSize: 11, color: "#666" }}>{row.detail}</p>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
