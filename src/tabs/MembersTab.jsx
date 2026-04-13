@@ -250,7 +250,7 @@ export default function MembersTab({ customers, fire, reload }) {
                 </div>
               )}
               {memTier === "champion" && (
-                <p style={{ fontSize: 12, fontWeight: 700, color: activeTier.c }}>\u221e</p>
+                <p style={{ fontSize: 12, fontWeight: 700, color: activeTier.c }}>∞</p>
               )}
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button

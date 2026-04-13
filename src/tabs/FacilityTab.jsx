@@ -31,7 +31,7 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hour
   const [hoursSaving,setHoursSaving]= useState(false);
 
   /* Front Desk PIN */
-  const [newPin,     setNewPin]     = useState(["","","","",""]); // 4 digits for new PIN
+  const [newPin,     setNewPin]     = useState(["","","",""]); // 4 digits for new PIN
   const [pinSaving,  setPinSaving]  = useState(false);
   const [pinError,   setPinError]   = useState("");
   const pinRefs = [React.useRef(), React.useRef(), React.useRef(), React.useRef()];

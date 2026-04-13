@@ -17,7 +17,7 @@ export default function CustomersTab({ customers, bookings, onRefresh }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <h2 style={{ fontSize: 22, fontWeight: 700 }}>Customers ({customers.length})</h2>
         <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }} onClick={onRefresh}>
-          \u21bb Refresh
+          ↻ Refresh
         </button>
       </div>
 
