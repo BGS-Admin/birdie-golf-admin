@@ -254,14 +254,41 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
   const saveEdits = async () => {
     setSaving(true);
     const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+    const newBay  = selB.bay;
+    const newTime = selB.time || selB.start_time;
+    const newDate = selB.date || dateKey(resDate);
+
+    // Check for bay conflicts — block if another confirmed booking occupies any portion of this time on the target bay
+    const newStart = toH(newTime);
+    const newEnd   = newStart + durSlots * 0.5;
+    const conflict = bookings.find(b =>
+      b.id !== selB.id &&               // not this booking
+      b.bay === newBay &&               // same bay
+      b.date === newDate &&             // same date
+      b.status !== "cancelled" &&       // not cancelled
+      (() => {
+        const bStart = toH(b.start_time);
+        const bEnd   = bStart + (b.duration_slots || 2) * 0.5;
+        return newStart < bEnd && newEnd > bStart; // overlap check
+      })()
+    );
+
+    if (conflict) {
+      const cust = customers.find(c => c.id === conflict.customer_id);
+      fire(`Bay ${newBay} is already booked at ${conflict.start_time}${cust ? " · " + ((cust.first_name || "") + " " + (cust.last_name || "")).trim() : ""}. Choose a different bay.`);
+      setSaving(false);
+      return;
+    }
+
     await db.patch("bookings", `id=eq.${selB.id}`, {
       status:         selB.status,
-      bay:            selB.bay,
-      start_time:     selB.time || selB.start_time,
+      bay:            newBay,
+      start_time:     newTime,
       duration_slots: durSlots,
       admin_notes:    selB.notes || "",
     });
-    fire("Booking updated \u2713");
+    await logActivity?.(`Updated booking: ${selB.type} · Bay ${newBay} · ${newDate} · ${newTime}`);
+    fire("Booking updated ✓");
     setSaving(false);
     closeModal();
     reload();
@@ -616,15 +643,32 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, f
               <div>
                 <label style={GS.label}>BAY</label>
                 <div style={{ display: "flex", gap: 3 }}>
-                  {[1, 2, 3, 4, 5].map(b => (
-                    <button
-                      key={b}
-                      style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", ...(selB.bay === b ? { background: GREEN, color: "#fff" } : {}) }}
-                      onClick={() => setSelB(p => ({ ...p, bay: b }))}
-                    >
-                      {b}
-                    </button>
-                  ))}
+                  {[1, 2, 3, 4, 5].map(b => {
+                    const editDate  = selB.date || dateKey(resDate);
+                    const editTime  = selB.time || selB.start_time;
+                    const editSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+                    const eStart    = editTime ? toH(editTime) : null;
+                    const eEnd      = eStart ? eStart + editSlots * 0.5 : null;
+                    const isTaken   = eStart !== null && b !== selB.bay && bookings.some(bk =>
+                      bk.id !== selB.id && bk.bay === b && bk.date === editDate &&
+                      bk.status !== "cancelled" &&
+                      toH(bk.start_time) < eEnd && (toH(bk.start_time) + (bk.duration_slots || 2) * 0.5) > eStart
+                    );
+                    const isSel = selB.bay === b;
+                    return (
+                      <button
+                        key={b}
+                        title={isTaken ? `Bay ${b} is already booked during this time` : ""}
+                        style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", position: "relative",
+                          ...(isSel ? { background: GREEN, color: "#fff", borderColor: GREEN } :
+                             isTaken ? { background: "#fff0f0", color: "#E03928", borderColor: "#E0392844", cursor: "not-allowed" } : {})
+                        }}
+                        onClick={() => { if (!isTaken) setSelB(p => ({ ...p, bay: b })); }}
+                      >
+                        {b}{isTaken ? " ✕" : ""}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
