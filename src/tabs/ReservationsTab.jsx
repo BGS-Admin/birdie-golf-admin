@@ -912,9 +912,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
-    </div>
-  );
-}        </>
+        </>
       )}
 
       {/* ── CHANGES & CANCELLATIONS VIEW ── */}
@@ -986,3 +984,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
+    </div>
+  );
+}
