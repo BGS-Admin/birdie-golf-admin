@@ -5,6 +5,9 @@ import { GREEN, RED, TC, TB, TIERS, mono, ff, cn, dateKey, X, S, GS } from "../l
 
 export default function MembersTab({ customers, fire, reload }) {
   const [memTier,     setMemTier]     = useState("player");
+  const [showFormer,  setShowFormer]  = useState(false);
+  const [formerList,  setFormerList]  = useState([]);
+  const [formerLoad,  setFormerLoad]  = useState(false);
   const [memModal,    setMemModal]    = useState(null);
   const [cancelModal, setCancelModal] = useState(null);
   const [search,      setSearch]      = useState("");
@@ -88,6 +91,24 @@ export default function MembersTab({ customers, fire, reload }) {
   };
 
   /* ── Cancel membership ── */
+  const loadFormerMembers = async () => {
+    setFormerLoad(true);
+    // Get customers who have cancellation history but are no longer active members
+    const hist = await db.get("membership_history", "select=*&order=created_at.desc");
+    const cancelled = (hist || []).filter(h => h.action === "cancel_scheduled" || h.action === "cancelled");
+    // Group by customer — get most recent cancellation per customer
+    const seen = new Set();
+    const unique = [];
+    for (const h of cancelled) {
+      if (!seen.has(h.customer_id)) {
+        seen.add(h.customer_id);
+        unique.push(h);
+      }
+    }
+    setFormerList(unique);
+    setFormerLoad(false);
+  };
+
   const cancelMembership = async () => {
     if (!cancelModal) return;
     setSaving(true);
@@ -193,22 +214,67 @@ export default function MembersTab({ customers, fire, reload }) {
       <div style={{ display: "flex", gap: 0, marginBottom: 16, background: "#f0f0ee", borderRadius: 12, padding: 3 }}>
         {TIERS.map(t => {
           const count  = members.filter(c => c.tier === t.id).length;
-          const active = memTier === t.id;
+          const active = !showFormer && memTier === t.id;
           return (
             <button
               key={t.id}
               style={{ flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: active ? t.c : "transparent", color: active ? "#fff" : "#888", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, textAlign: "center" }}
-              onClick={() => setMemTier(t.id)}
+              onClick={() => { setShowFormer(false); setMemTier(t.id); }}
             >
               <span style={{ display: "block" }}>{t.badge}</span>
               <span style={{ display: "block", fontSize: 10, fontWeight: 400, marginTop: 2 }}>{count}</span>
             </button>
           );
         })}
+        <button
+          style={{ flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: showFormer ? "#555" : "transparent", color: showFormer ? "#fff" : "#888", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, textAlign: "center" }}
+          onClick={() => { setShowFormer(true); loadFormerMembers(); }}
+        >
+          <span style={{ display: "block" }}>FMRS</span>
+          <span style={{ display: "block", fontSize: 10, fontWeight: 400, marginTop: 2 }}>Former</span>
+        </button>
       </div>
 
+      {/* ── Former Members View ── */}
+      {showFormer && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <p style={{ fontSize: 13, color: "#888" }}>Customers who had a membership and cancelled</p>
+            <button style={{ ...S.b1, width: "auto", padding: "6px 12px", fontSize: 11, background: "#888" }} onClick={loadFormerMembers}>↻ Refresh</button>
+          </div>
+          {formerLoad ? (
+            <p style={{ color: "#aaa", fontSize: 13 }}>Loading...</p>
+          ) : formerList.length === 0 ? (
+            <div style={S.empty}>No former members found.</div>
+          ) : (
+            formerList.map((h, i) => {
+              const cust = customers.find(c => c.id === h.customer_id);
+              const tierInfo = TIERS.find(t => t.id === h.tier);
+              const cancelDate = h.created_at ? new Date(h.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Unknown";
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: "#fff", border: "1px solid #e8e8e6", borderRadius: 12, marginBottom: 6 }}>
+                  <div style={{ width: 38, height: 38, borderRadius: 10, background: "#f0f0ee", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, fontFamily: mono, color: "#888", flexShrink: 0 }}>
+                    {cust ? (cust.first_name?.[0] || "") + (cust.last_name?.[0] || "") : "?"}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontSize: 14, fontWeight: 600 }}>{cust ? cn(cust) : "Unknown Customer"}</p>
+                    <p style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{cust?.phone || ""}{cust?.email ? " · " + cust.email : ""}</p>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ display: "inline-block", background: (tierInfo?.c || "#888") + "20", color: tierInfo?.c || "#888", fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 6, fontFamily: mono, marginBottom: 4 }}>
+                      {tierInfo?.badge || h.tier?.toUpperCase() || "MBR"}
+                    </span>
+                    <p style={{ fontSize: 11, color: "#aaa" }}>Cancelled {cancelDate}</p>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       {/* Tier info bar */}
-      {activeTier && (
+      {!showFormer && activeTier && (
         <div style={{ background: activeTier.c + "10", borderRadius: 12, padding: "12px 16px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <span style={{ fontSize: 15, fontWeight: 700, color: activeTier.c }}>{activeTier.n}</span>
@@ -219,9 +285,9 @@ export default function MembersTab({ customers, fire, reload }) {
       )}
 
       {/* Member list */}
-      {tierMembers.length === 0 ? (
+      {!showFormer && tierMembers.length === 0 ? (
         <div style={S.empty}><p>No {activeTier?.n} members yet</p></div>
-      ) : (
+      ) : !showFormer ? (
         tierMembers.map(c => (
           <div key={c.id} style={S.cR}>
             <div style={{ width: 40, height: 40, borderRadius: 10, background: activeTier.c + "18", color: activeTier.c, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, fontFamily: mono, flexShrink: 0 }}>
@@ -269,10 +335,10 @@ export default function MembersTab({ customers, fire, reload }) {
             </div>
           </div>
         ))
-      )}
+      ) : null}
 
       {/* Perks */}
-      {activeTier && (
+      {!showFormer && activeTier && (
         <div style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, padding: 16, marginTop: 16 }}>
           <p style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Perks</p>
           {activeTier.perks.map(p => (
