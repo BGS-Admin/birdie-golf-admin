@@ -679,15 +679,34 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               <div>
                 <label style={GS.label}>BAY</label>
                 <div style={{ display: "flex", gap: 3 }}>
-                  {[1, 2, 3, 4, 5].map(b => (
-                    <button
-                      key={b}
-                      style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", ...(selB.bay === b ? { background: GREEN, color: "#fff" } : {}) }}
-                      onClick={() => setSelB(p => ({ ...p, bay: b }))}
-                    >
-                      {b}
-                    </button>
-                  ))}
+                  {[1, 2, 3, 4, 5].map(b => {
+                    const editDate  = selB.date || dateKey(resDate);
+                    const editTime  = selB.time || selB.start_time;
+                    const editSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+                    const eStart    = editTime ? toH(editTime) : null;
+                    const eEnd      = eStart !== null ? eStart + editSlots * 0.5 : null;
+                    const isTaken   = eStart !== null && b !== selB.bay && bookings.some(bk =>
+                      bk.id !== selB.id && bk.bay === b && bk.date === editDate &&
+                      bk.status !== "cancelled" &&
+                      toH(bk.start_time) < eEnd && (toH(bk.start_time) + (bk.duration_slots || 2) * 0.5) > eStart
+                    );
+                    const isSel = selB.bay === b;
+                    return (
+                      <button
+                        key={b}
+                        disabled={isTaken}
+                        title={isTaken ? `Bay ${b} is already booked during this time` : ""}
+                        style={{
+                          ...GS.togBtn, flex: 1, padding: "7px 4px",
+                          ...(isSel  ? { background: GREEN, color: "#fff", borderColor: GREEN } :
+                              isTaken ? { background: "#fef2f2", color: "#E03928", borderColor: "#fecaca", cursor: "not-allowed", opacity: 0.7 } : {})
+                        }}
+                        onClick={() => { if (!isTaken) setSelB(p => ({ ...p, bay: b })); }}
+                      >
+                        {b}{isTaken ? " ✕" : ""}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
