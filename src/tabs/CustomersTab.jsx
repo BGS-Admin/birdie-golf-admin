@@ -1,8 +1,24 @@
-import React from "react";
-import { GREEN, TC, TN, TB, mono, ff, cn, X, S, GS } from "../lib/constants.jsx";
+import React, { useState } from "react";
+import { db, SB_URL, SB_KEY } from "../lib/db.js";
+import { GREEN, TC, TN, mono, ff, cn, X, S, GS } from "../lib/constants.jsx";
 
-export default function CustomersTab({ customers, bookings, onRefresh }) {
-  const [search, setSearch] = React.useState("");
+const sq = async (action, params = {}) => {
+  try {
+    const r = await fetch(`${SB_URL}/functions/v1/square-proxy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}` },
+      body: JSON.stringify({ action, ...params }),
+    });
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+};
+
+export default function CustomersTab({ customers, bookings, onRefresh, logActivity }) {
+  const [search,    setSearch]    = useState("");
+  const [addModal,  setAddModal]  = useState(false);
+  const [form,      setForm]      = useState({ firstName: "", lastName: "", phone: "", email: "" });
+  const [saving,    setSaving]    = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const filtered = search
     ? customers.filter(c =>
@@ -12,13 +28,66 @@ export default function CustomersTab({ customers, bookings, onRefresh }) {
       )
     : customers;
 
+  const openAdd = () => {
+    setForm({ firstName: "", lastName: "", phone: "", email: "" });
+    setSaveError("");
+    setAddModal(true);
+  };
+
+  const saveCustomer = async () => {
+    setSaveError("");
+    const phone = form.phone.replace(/\D/g, "");
+    if (!form.firstName.trim()) { setSaveError("First name is required."); return; }
+    if (phone.length < 10) { setSaveError("Please enter a valid 10-digit phone number."); return; }
+
+    // Check for duplicate phone
+    const existing = await db.get("customers", `phone=eq.${phone}&select=id`);
+    if (existing?.length) { setSaveError("A customer with this phone number already exists."); return; }
+
+    setSaving(true);
+    // 1. Create in Supabase
+    const rows = await db.post("customers", {
+      first_name: form.firstName.trim(),
+      last_name:  form.lastName.trim(),
+      phone,
+      email:      form.email.trim(),
+      tier:       "none",
+      bay_credits_remaining: 0,
+      bay_credits_total:     0,
+    });
+    const newCust = Array.isArray(rows) ? rows[0] : rows;
+    if (!newCust?.id) { setSaveError("Failed to create customer. Please try again."); setSaving(false); return; }
+
+    // 2. Create in Square (fire and forget — link square_customer_id back when done)
+    sq("customer.create", {
+      first_name:  form.firstName.trim(),
+      last_name:   form.lastName.trim(),
+      phone,
+      email:       form.email.trim(),
+      supabase_id: newCust.id,
+    }).then(async sqResult => {
+      const sqId = sqResult?.customer?.id;
+      if (sqId) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: sqId });
+    });
+
+    await logActivity?.(`Added new customer: ${form.firstName.trim()} ${form.lastName.trim()} (${phone})`);
+    setSaving(false);
+    setAddModal(false);
+    onRefresh();
+  };
+
   return (
     <div style={S.pad}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <h2 style={{ fontSize: 22, fontWeight: 700 }}>Customers ({customers.length})</h2>
-        <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }} onClick={onRefresh}>
-          ↻ Refresh
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }} onClick={openAdd}>
+            {X.plus(14)} Add Customer
+          </button>
+          <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#888" }} onClick={onRefresh}>
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       <div style={S.srch}>
@@ -50,7 +119,7 @@ export default function CustomersTab({ customers, bookings, onRefresh }) {
               <div style={{ flex: 1 }}>
                 <p style={{ fontSize: 14, fontWeight: 600 }}>{cn(c)}</p>
                 <p style={{ fontSize: 11, color: "#888" }}>
-                  {c.phone || ""}{c.email ? " \u00b7 " + c.email : ""}
+                  {c.phone || ""}{c.email ? " · " + c.email : ""}
                 </p>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -64,6 +133,82 @@ export default function CustomersTab({ customers, bookings, onRefresh }) {
             </div>
           );
         })
+      )}
+
+      {/* ── Add Customer Modal ── */}
+      {addModal && (
+        <div style={S.ov} onClick={() => setAddModal(false)}>
+          <div style={{ ...S.mod, maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Add New Customer</h3>
+            <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>
+              Creates a profile so they can log in with their phone number — no onboarding required.
+            </p>
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label style={GS.label}>FIRST NAME *</label>
+                <input
+                  style={GS.input}
+                  placeholder="First"
+                  value={form.firstName}
+                  onChange={e => setForm(p => ({ ...p, firstName: e.target.value }))}
+                  autoFocus
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={GS.label}>LAST NAME</label>
+                <input
+                  style={GS.input}
+                  placeholder="Last"
+                  value={form.lastName}
+                  onChange={e => setForm(p => ({ ...p, lastName: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={GS.label}>PHONE NUMBER *</label>
+              <input
+                style={GS.input}
+                placeholder="3051234567"
+                type="tel"
+                inputMode="numeric"
+                value={form.phone}
+                onChange={e => setForm(p => ({ ...p, phone: e.target.value.replace(/\D/g, "").slice(0, 10) }))}
+              />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={GS.label}>EMAIL</label>
+              <input
+                style={GS.input}
+                placeholder="optional"
+                type="email"
+                value={form.email}
+                onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
+              />
+            </div>
+
+            {saveError && (
+              <div style={{ background: "#FFF0F0", border: "1px solid #E0392822", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+                <p style={{ fontSize: 12, color: "#E03928" }}>{saveError}</p>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...GS.togBtn, flex: 1, padding: "12px 16px" }} onClick={() => setAddModal(false)}>
+                Cancel
+              </button>
+              <button
+                style={{ ...S.b1, flex: 2, opacity: (form.firstName && form.phone.replace(/\D/g,"").length >= 10) ? 1 : 0.4 }}
+                disabled={saving || !form.firstName || form.phone.replace(/\D/g,"").length < 10}
+                onClick={saveCustomer}
+              >
+                {saving ? "Saving..." : "Add Customer"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

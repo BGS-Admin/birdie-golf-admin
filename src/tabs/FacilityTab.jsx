@@ -13,7 +13,7 @@ const TIME_OPTIONS = [
   "6:00 PM","6:30 PM","7:00 PM","7:30 PM","8:00 PM","8:30 PM","9:00 PM","9:30 PM","10:00 PM","11:00 PM"
 ];
 
-export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hoursConfig, setHoursConfig, fdPin, setFdPin, userRole, fire, reload, logActivity }) {
+export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hoursConfig, setHoursConfig, fdPin, setFdPin, userRole, fire, reload, logActivity, enrollmentFeeEnabled, setEnrollmentFeeEnabled }) {
   const [facTab,     setFacTab]     = useState("bays");
   const [newBlock,   setNewBlock]   = useState({ bays: [], from: "", to: "", timeFrom: "7:00 AM", timeTo: "10:00 PM", allDay: true, reason: "" });
 
@@ -365,6 +365,29 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hour
             <button style={{ ...S.b1, marginTop: 14 }} onClick={saveHours} disabled={hoursSaving}>
               {hoursSaving ? "Saving..." : "Save Hours"}
             </button>
+          </div>
+
+          {/* Enrollment Fees */}
+          <h3 style={S.sh}>Enrollment Fees</h3>
+          <div style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, padding: 16, marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 600 }}>Charge enrollment fees at sign-up</p>
+                <p style={{ fontSize: 11, color: "#888", marginTop: 2 }}>Early Birdie: $50 · Player: $75 (one-time, first month only)</p>
+              </div>
+              <button
+                style={{ width: 48, height: 28, borderRadius: 14, border: "none", cursor: "pointer", background: enrollmentFeeEnabled ? GREEN : "#ccc", position: "relative", transition: "background .2s", flexShrink: 0 }}
+                onClick={async () => {
+                  const next = !enrollmentFeeEnabled;
+                  setEnrollmentFeeEnabled(next);
+                  await db.upsert("admin_settings", { id: 1, enrollment_fee_enabled: next }, "id");
+                  await logActivity?.(`Enrollment fees ${next ? "enabled" : "disabled"}`);
+                  fire(`Enrollment fees ${next ? "enabled" : "disabled"} ✓`);
+                }}
+              >
+                <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 4, left: enrollmentFeeEnabled ? 24 : 4, transition: "left .2s", boxShadow: "0 1px 3px rgba(0,0,0,.2)" }} />
+              </button>
+            </div>
           </div>
 
           {/* Front Desk PIN — owners only */}

@@ -3,18 +3,20 @@ import { db } from "../lib/db.js";
 import { sq } from "../lib/square.js";
 import { GREEN, RED, TC, TB, TIERS, mono, ff, cn, dateKey, X, S, GS } from "../lib/constants.jsx";
 
-export default function MembersTab({ customers, fire, reload }) {
+export default function MembersTab({ customers, fire, reload, logActivity }) {
   const [memTier,     setMemTier]     = useState("player");
   const [showFormer,  setShowFormer]  = useState(false);
   const [formerList,  setFormerList]  = useState([]);
   const [formerLoad,  setFormerLoad]  = useState(false);
   const [memModal,    setMemModal]    = useState(null);
   const [cancelModal, setCancelModal] = useState(null);
+  const [endModal,    setEndModal]    = useState(null);   // { cust, step: 1|2, confirmText }
+  const [switchModal, setSwitchModal] = useState(null);  // { cust, toTier }
   const [search,      setSearch]      = useState("");
   const [saving,      setSaving]      = useState(false);
-  const [txnModal,      setTxnModal]      = useState(null); // { cust, txns }
+  const [txnModal,      setTxnModal]      = useState(null);
   const [loadingTxns,   setLoadingTxns]   = useState(false);
-  const [creditModal,   setCreditModal]   = useState(null); // { cust }
+  const [creditModal,   setCreditModal]   = useState(null);
 
   const members     = customers.filter(c => c.tier && c.tier !== "none");
   const tierMembers = members.filter(c => c.tier === memTier);
@@ -152,6 +154,63 @@ export default function MembersTab({ customers, fire, reload }) {
     fire(msg);
     setSaving(false);
     setCancelModal(null);
+    reload();
+  };
+
+  /* ── End membership immediately ── */
+  const endMembershipNow = async () => {
+    if (!endModal) return;
+    setSaving(true);
+    const c = endModal.cust;
+    await db.patch("customers", `id=eq.${c.id}`, {
+      tier:                  "none",
+      bay_credits_remaining: 0,
+      bay_credits_total:     0,
+      renewal_date:          null,
+      member_since:          null,
+      cancellation_scheduled: false,
+      pending_tier:          null,
+    });
+    await db.post("membership_history", {
+      customer_id: c.id,
+      action:      "cancelled",
+      tier:        c.tier,
+      amount:      0,
+      date:        dateKey(new Date()),
+    });
+    await db.post("transactions", {
+      customer_id:   c.id,
+      description:   "Membership Ended Immediately — " + (TIERS.find(t => t.id === c.tier)?.n || c.tier) + " Plan",
+      date:          dateKey(new Date()),
+      amount:        0,
+      payment_label: "Admin",
+    });
+    await logActivity?.(`Ended membership immediately for ${cn(c)} (was ${c.tier})`);
+    fire(`${cn(c)}'s membership ended.`);
+    setSaving(false);
+    setEndModal(null);
+    reload();
+  };
+
+  /* ── Switch membership tier ── */
+  const switchTier = async () => {
+    if (!switchModal) return;
+    setSaving(true);
+    const { cust: c, toTier } = switchModal;
+    const newT = TIERS.find(t => t.id === toTier);
+    // Set pending_tier — takes effect at next renewal (mirrors customer app logic)
+    await db.patch("customers", `id=eq.${c.id}`, { pending_tier: toTier });
+    await db.post("membership_history", {
+      customer_id: c.id,
+      action:      "switch_scheduled",
+      tier:        toTier,
+      amount:      0,
+      date:        dateKey(new Date()),
+    });
+    await logActivity?.(`Scheduled tier switch for ${cn(c)}: ${c.tier} → ${toTier} effective ${c.renewal_date}`);
+    fire(`Switch to ${newT?.n} scheduled for ${c.renewal_date}`);
+    setSaving(false);
+    setSwitchModal(null);
     reload();
   };
 
@@ -318,18 +377,34 @@ export default function MembersTab({ customers, fire, reload }) {
               {memTier === "champion" && (
                 <p style={{ fontSize: 12, fontWeight: 700, color: activeTier.c }}>∞</p>
               )}
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
                 <button
                   style={{ fontSize: 10, color: "#888", background: "none", border: "1px solid #e8e8e6", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
                   onClick={() => openTxns(c)}
                 >
                   History
                 </button>
+                {!c.cancellation_scheduled && (
+                  <button
+                    style={{ fontSize: 10, color: "#5B6DCD", background: "none", border: "1px solid #5B6DCD44", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
+                    onClick={() => setSwitchModal({ cust: c, toTier: null })}
+                  >
+                    Switch
+                  </button>
+                )}
+                {!c.cancellation_scheduled && (
+                  <button
+                    style={{ fontSize: 10, color: RED, background: "none", border: "none", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
+                    onClick={() => setCancelModal(c)}
+                  >
+                    Cancel
+                  </button>
+                )}
                 <button
-                  style={{ fontSize: 10, color: RED, background: "none", border: "none", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
-                  onClick={() => setCancelModal(c)}
+                  style={{ fontSize: 10, color: "#fff", background: RED, border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: ff, fontWeight: 600 }}
+                  onClick={() => setEndModal({ cust: c, step: 1, confirmText: "" })}
                 >
-                  Cancel
+                  End Now
                 </button>
               </div>
             </div>
@@ -677,6 +752,167 @@ export default function MembersTab({ customers, fire, reload }) {
           </div>
         </div>
       )}
+
+      {/* ══════════════════════════════════════
+          END MEMBERSHIP NOW MODAL (Step 1)
+      ══════════════════════════════════════ */}
+      {endModal?.step === 1 && (
+        <div style={S.ov} onClick={() => setEndModal(null)}>
+          <div style={{ ...S.mod, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: RED + "18", color: RED, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {X.warn(20)}
+              </div>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700 }}>End Membership Immediately?</h3>
+                <p style={{ fontSize: 12, color: "#888" }}>{cn(endModal.cust)}</p>
+              </div>
+            </div>
+            <div style={{ background: "#FFF0F0", border: "1px solid #E0392822", borderRadius: 10, padding: 14, marginBottom: 20 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, color: RED, marginBottom: 6 }}>This cannot be undone.</p>
+              <p style={{ fontSize: 12, color: "#555", lineHeight: 1.6 }}>
+                The membership will be terminated <strong>right now</strong>. All bay credits are removed immediately and the customer loses access instantly — not at their renewal date.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...GS.togBtn, flex: 1, padding: "12px 16px" }} onClick={() => setEndModal(null)}>Keep Active</button>
+              <button style={{ ...S.bDanger, flex: 2 }} onClick={() => setEndModal(p => ({ ...p, step: 2 }))}>
+                Yes, End Membership
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          END MEMBERSHIP NOW MODAL (Step 2 — type CONFIRM)
+      ══════════════════════════════════════ */}
+      {endModal?.step === 2 && (
+        <div style={S.ov} onClick={() => setEndModal(null)}>
+          <div style={{ ...S.mod, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: RED + "18", color: RED, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {X.warn(20)}
+              </div>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 700 }}>Final Confirmation</h3>
+                <p style={{ fontSize: 12, color: "#888" }}>{cn(endModal.cust)}</p>
+              </div>
+            </div>
+            <p style={{ fontSize: 13, color: "#555", marginBottom: 12, lineHeight: 1.5 }}>
+              Type <strong style={{ fontFamily: mono, color: RED }}>CONFIRM</strong> below to permanently end this membership now.
+            </p>
+            <input
+              style={{ ...GS.input, marginBottom: 16, borderColor: endModal.confirmText === "CONFIRM" ? RED : "#e8e8e6", fontFamily: mono, fontWeight: 700, letterSpacing: 2 }}
+              placeholder="Type CONFIRM"
+              value={endModal.confirmText}
+              onChange={e => setEndModal(p => ({ ...p, confirmText: e.target.value }))}
+              autoFocus
+            />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...GS.togBtn, flex: 1, padding: "12px 16px" }} onClick={() => setEndModal(null)}>Cancel</button>
+              <button
+                style={{ ...S.bDanger, flex: 2, opacity: endModal.confirmText === "CONFIRM" ? 1 : 0.4 }}
+                disabled={endModal.confirmText !== "CONFIRM" || saving}
+                onClick={endMembershipNow}
+              >
+                {saving ? "Ending..." : "End Membership Now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          SWITCH PLAN MODAL
+      ══════════════════════════════════════ */}
+      {switchModal && (() => {
+        const c = switchModal.cust;
+        const currentTierIdx = TIERS.findIndex(t => t.id === c.tier);
+        const newT = TIERS.find(t => t.id === switchModal.toTier);
+        const today = new Date(); today.setHours(0,0,0,0);
+        const rd = c.renewal_date ? new Date(c.renewal_date + "T12:00:00") : null;
+        const daysToRenewal = rd ? Math.ceil((rd - today) / 86400000) : 999;
+        const within7 = daysToRenewal <= 7;
+        return (
+          <div style={S.ov} onClick={() => setSwitchModal(null)}>
+            <div style={{ ...S.mod, maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+              <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Switch Plan</h3>
+              <p style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>
+                {cn(c)} · Currently on <strong>{TIERS.find(t => t.id === c.tier)?.n || c.tier}</strong> · Renews {c.renewal_date || "—"}
+              </p>
+
+              {!switchModal.toTier ? (
+                <>
+                  <label style={GS.label}>SELECT NEW PLAN</label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+                    {TIERS.filter(t => t.id !== c.tier && t.id !== c.pending_tier).map((t, i) => {
+                      const tIdx = TIERS.findIndex(x => x.id === t.id);
+                      return (
+                        <button
+                          key={t.id}
+                          style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "#fff", border: "1.5px solid #e8e8e6", borderRadius: 12, cursor: "pointer", fontFamily: ff, textAlign: "left", width: "100%" }}
+                          onClick={() => setSwitchModal(p => ({ ...p, toTier: t.id }))}
+                        >
+                          <span style={{ background: t.c, color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 5, fontFamily: mono, letterSpacing: 1, flexShrink: 0 }}>{t.badge}</span>
+                          <div style={{ flex: 1 }}>
+                            <p style={{ fontSize: 14, fontWeight: 600 }}>{t.n}</p>
+                            <p style={{ fontSize: 11, color: "#888" }}>${t.p}/mo</p>
+                          </div>
+                          <span style={{ fontSize: 12, color: "#aaa", fontWeight: 600, flexShrink: 0 }}>
+                            {tIdx > currentTierIdx ? "Upgrade ↑" : "Downgrade ↓"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button style={{ ...GS.togBtn, width: "100%" }} onClick={() => setSwitchModal(null)}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  {within7 ? (
+                    <div style={{ background: "#FFF5E5", border: "1px solid #E8890C44", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: "#E8890C", marginBottom: 6 }}>Within 7 Days of Renewal</p>
+                      <p style={{ fontSize: 13, color: "#555", lineHeight: 1.6 }}>
+                        Renewal is in {daysToRenewal} day{daysToRenewal !== 1 ? "s" : ""}. The switch to <strong>{newT?.n}</strong> will be scheduled for the next renewal date to avoid billing conflicts.
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ background: "#F0F7F4", border: "1px solid #4A8B6E22", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+                      <p style={{ fontSize: 13, color: "#555", lineHeight: 1.6 }}>
+                        The customer stays on their current plan until <strong>{c.renewal_date}</strong>. On that date they automatically switch to <strong>{newT?.n}</strong> (${newT?.p}/mo).
+                      </p>
+                    </div>
+                  )}
+                  <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+                    {[
+                      ["Current plan", TIERS.find(t => t.id === c.tier)?.n || c.tier],
+                      ["New plan",     `${newT?.n} ($${newT?.p}/mo)`],
+                      ["Effective",    c.renewal_date || "Next renewal"],
+                    ].map(([l, v]) => (
+                      <div key={l} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 12, color: "#888" }}>{l}</span>
+                        <span style={{ fontSize: 12, fontWeight: 600 }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button style={{ ...GS.togBtn, padding: "12px 16px" }} onClick={() => setSwitchModal(p => ({ ...p, toTier: null }))}>← Back</button>
+                    <button
+                      style={{ ...S.b1, flex: 2, background: newT?.c }}
+                      disabled={saving}
+                      onClick={switchTier}
+                    >
+                      {saving ? "Saving..." : `Confirm Switch to ${newT?.n}`}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
     </div>
   );
 }

@@ -34,6 +34,7 @@ export default function AdminApp() {
   const [cfg,         setCfg]         = useState({ pk: 75, op: 50, wk: 50 });
   const [hoursConfig, setHoursConfig] = useState(null);
   const [fdPin,       setFdPin]       = useState("2025");
+  const [enrollmentFeeEnabled, setEnrollmentFeeEnabled] = useState(true);
 
   /* ── Load settings on mount ── */
   useEffect(() => {
@@ -46,6 +47,7 @@ export default function AdminApp() {
           weekend_open:  rows[0].weekend_open,
           weekend_close: rows[0].weekend_close,
         });
+        if (rows[0].enrollment_fee_enabled !== undefined) setEnrollmentFeeEnabled(rows[0].enrollment_fee_enabled !== false);
       }
     });
   }, []);
@@ -95,6 +97,7 @@ export default function AdminApp() {
         weekend_open:  settings[0].weekend_open,
         weekend_close: settings[0].weekend_close,
       });
+      if (settings[0].enrollment_fee_enabled !== undefined) setEnrollmentFeeEnabled(settings[0].enrollment_fee_enabled !== false);
     }
     setLoading(false);
   }, []);
@@ -185,7 +188,7 @@ export default function AdminApp() {
           {view === "cust"     && <CustomersTab    customers={customers} bookings={bookings} onRefresh={load} logActivity={logActivity} />}
           {view === "members"  && <MembersTab      customers={customers} fire={fire} reload={load} logActivity={logActivity} />}
           {view === "reports"  && <ReportsTab      bookings={bookings} customers={customers} />}
-          {view === "facility" && <FacilityTab     bayBlocks={bayBlocks} setBayBlocks={setBayBlocks} cfg={cfg} setCfg={setCfg} hoursConfig={hoursConfig} setHoursConfig={setHoursConfig} fdPin={fdPin} setFdPin={setFdPin} userRole={userRole} fire={fire} reload={load} logActivity={logActivity} />}
+          {view === "facility" && <FacilityTab     bayBlocks={bayBlocks} setBayBlocks={setBayBlocks} cfg={cfg} setCfg={setCfg} hoursConfig={hoursConfig} setHoursConfig={setHoursConfig} fdPin={fdPin} setFdPin={setFdPin} userRole={userRole} fire={fire} reload={load} logActivity={logActivity} enrollmentFeeEnabled={enrollmentFeeEnabled} setEnrollmentFeeEnabled={setEnrollmentFeeEnabled} />}
         </div>
       </div>
 

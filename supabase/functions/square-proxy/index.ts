@@ -6,6 +6,9 @@ const LOCATION_ID = "LHYS7H99XC8WD";
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") || "";
 const ADMIN_EMAIL = Deno.env.get("ADMIN_EMAIL") || "";
 const FROM_EMAIL = "Birdie Golf Studios <info@birdiegolfstudios.com>";
+const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID") || "";
+const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN") || "";
+const TWILIO_PHONE_NUMBER = Deno.env.get("TWILIO_PHONE_NUMBER") || "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -187,6 +190,28 @@ function buildEmail(type: string, p: any): { subject: string; html: string } {
       return { subject, html };
     }
 
+    case "membership_switch": {
+      const subject = `Membership Switch Scheduled — Birdie Golf Studios`;
+      const html = emailBase(`
+        ${greeting(p.customer_name)}
+        ${confirmBadge("✓ Switch Scheduled")}
+        <p style="margin:0 0 20px;font-size:14px;color:#555;line-height:1.6;">
+          Your membership switch has been scheduled. Here's what to expect.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+          ${detailRow("Current Plan", p.current_plan)}
+          ${detailRow("New Plan", p.new_plan)}
+          ${detailRow("New Monthly Rate", p.new_price)}
+          ${detailRow("Switch Date", p.switch_date)}
+        </table>
+        <p style="margin:0 0 4px;font-size:12px;color:#aaa;line-height:1.6;">
+          You will continue to enjoy your current ${p.current_plan} membership until ${p.switch_date}. No charge today — your next billing cycle will reflect the new plan.
+        </p>
+        ${ctaButton("View My Membership")}
+      `);
+      return { subject, html };
+    }
+
     case "cancellation_membership": {
       const subject = `Membership Cancellation — Birdie Golf Studios`;
       const html = emailBase(`
@@ -239,6 +264,20 @@ async function sendEmail(to: string, type: string, params: any) {
   }
 }
 
+
+/* ─── SMS helper (Twilio) ─── */
+async function sendSms(to: string, body: string) {
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+  const auth = btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
+  const form = new URLSearchParams({ To: to.startsWith('+') ? to : `+1${to}`, From: TWILIO_PHONE_NUMBER, Body: body });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
+  });
+  return await res.json();
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -252,11 +291,42 @@ serve(async (req) => {
       case "card.create": result = await squareRequest("/cards", "POST", { idempotency_key: crypto.randomUUID(), source_id: params.source_id, card: { customer_id: params.square_customer_id } }); break;
       case "card.list": result = await squareRequest(`/cards?customer_id=${params.square_customer_id}`, "GET"); break;
       case "card.disable": result = await squareRequest(`/cards/${params.card_id}/disable`, "POST", {}); break;
-      case "payment.create": result = await squareRequest("/payments", "POST", { idempotency_key: crypto.randomUUID(), source_id: params.card_id || params.source_id, amount_money: { amount: Math.round(params.amount * 100), currency: "USD" }, customer_id: params.square_customer_id, location_id: LOCATION_ID, reference_id: params.booking_id || undefined, note: params.note || undefined, autocomplete: true }); break;
+      case "order.create": {
+        // Build line items from params.line_items: [{ name, amount }]
+        const lineItems = (params.line_items || []).map((item: { name: string; amount: number }) => ({
+          name: item.name,
+          quantity: "1",
+          base_price_money: { amount: Math.round(item.amount * 100), currency: "USD" },
+        }));
+        const orderBody: any = {
+          idempotency_key: crypto.randomUUID(),
+          order: {
+            location_id: LOCATION_ID,
+            customer_id: params.square_customer_id || undefined,
+            line_items: lineItems,
+            taxes: [{
+              uid: "bgs-tax",
+              name: "Sales Tax",
+              percentage: "7",
+              scope: "ORDER",
+            }],
+          },
+        };
+        result = await squareRequest("/orders", "POST", orderBody);
+        break;
+      }
+      case "payment.create": result = await squareRequest("/payments", "POST", { idempotency_key: crypto.randomUUID(), source_id: params.card_id || params.source_id, amount_money: { amount: Math.round(params.amount * 100), currency: "USD" }, customer_id: params.square_customer_id, location_id: LOCATION_ID, order_id: params.order_id || undefined, reference_id: params.booking_id || undefined, note: params.note || undefined, autocomplete: true }); break;
       case "payment.refund": result = await squareRequest("/refunds", "POST", { idempotency_key: crypto.randomUUID(), payment_id: params.payment_id, amount_money: { amount: Math.round(params.amount * 100), currency: "USD" }, reason: params.reason || "Booking cancellation" }); break;
       case "subscription.create": result = await squareRequest("/subscriptions", "POST", { idempotency_key: crypto.randomUUID(), location_id: LOCATION_ID, customer_id: params.square_customer_id, plan_variation_id: params.plan_id, card_id: params.card_id, start_date: params.start_date || new Date().toISOString().split("T")[0] }); break;
       case "subscription.cancel": result = await squareRequest(`/subscriptions/${params.subscription_id}/cancel`, "POST", {}); break;
       case "location.get": result = await squareRequest(`/locations/${LOCATION_ID}`, "GET"); break;
+
+      case "sms.send": {
+        // Send OTP code via Twilio
+        const smsResult = await sendSms(params.phone, `Your Birdie Golf Studios verification code is: ${params.code}`);
+        result = { sent: true, sid: smsResult?.sid };
+        break;
+      }
 
       case "email.send":
         if (params.customer_email) {
