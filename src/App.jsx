@@ -166,7 +166,7 @@ export default function AdminApp() {
           setPinError("Too many attempts. Locked for 30 seconds.");
           setPinFails(0);
         } else {
-          setPinError(\`Incorrect PIN (\${3 - fails} \${3 - fails === 1 ? "attempt" : "attempts"} left)\`);
+          setPinError(`Incorrect PIN (${3 - fails} ${3 - fails === 1 ? "attempt" : "attempts"} left)`);
         }
       }
     }
