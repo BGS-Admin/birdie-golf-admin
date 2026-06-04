@@ -28,6 +28,24 @@ export default function AdminApp() {
   const [loading,     setLoading]     = useState(false);
   const lockTimer                     = useRef(null);
 
+  // PIN login state
+  const [pinStep,      setPinStep]      = useState(null);  // null | {team member obj}
+  const [pinEntry,     setPinEntry]     = useState("");
+  const [pinError,     setPinError]     = useState("");
+  const [pinFails,     setPinFails]     = useState(0);
+  const [pinLocked,    setPinLocked]    = useState(0);     // timestamp when lockout ends
+  const [changePinModal, setChangePinModal] = useState(false);
+  const [cpStep,       setCpStep]       = useState(1);     // 1=current, 2=new, 3=confirm
+  const [cpCurrent,    setCpCurrent]    = useState("");
+  const [cpNew,        setCpNew]        = useState("");
+  const [cpConfirm,    setCpConfirm]    = useState("");
+  const [cpError,      setCpError]      = useState("");
+  const [cpSaving,     setCpSaving]     = useState(false);
+
+  // Owner PINs loaded from admin_settings
+  const [danielPin,    setDanielPin]    = useState("1212");
+  const [marcoPin,     setMarcoPin]     = useState("0101");
+
   const [customers,   setCustomers]   = useState([]);
   const [bookings,    setBookings]    = useState([]);
   const [bayBlocks,   setBayBlocks]   = useState([]);
@@ -40,7 +58,9 @@ export default function AdminApp() {
   useEffect(() => {
     db.get("admin_settings", "select=*&limit=1").then(rows => {
       if (rows?.[0]) {
-        if (rows[0].fd_pin)       setFdPin(rows[0].fd_pin);
+        if (rows[0].fd_pin)     setFdPin(rows[0].fd_pin);
+        if (rows[0].daniel_pin) setDanielPin(rows[0].daniel_pin);
+        if (rows[0].marco_pin)  setMarcoPin(rows[0].marco_pin);
         if (rows[0].weekday_open) setHoursConfig({
           weekday_open:  rows[0].weekday_open,
           weekday_close: rows[0].weekday_close,
@@ -90,7 +110,9 @@ export default function AdminApp() {
     setBayBlocks(bl || []);
     if (pr?.[0]) setCfg({ pk: pr[0].peak_rate, op: pr[0].off_peak_rate, wk: pr[0].weekend_rate });
     if (settings?.[0]) {
-      if (settings[0].fd_pin)       setFdPin(settings[0].fd_pin);
+      if (settings[0].fd_pin)     setFdPin(settings[0].fd_pin);
+      if (settings[0].daniel_pin) setDanielPin(settings[0].daniel_pin);
+      if (settings[0].marco_pin)  setMarcoPin(settings[0].marco_pin);
       if (settings[0].weekday_open) setHoursConfig({
         weekday_open:  settings[0].weekday_open,
         weekday_close: settings[0].weekday_close,
@@ -104,18 +126,80 @@ export default function AdminApp() {
 
   useEffect(() => { if (logged) load(); }, [logged, load]);
 
-  /* ── Login ── */
-  const login = async (t) => {
-    setUN(t.name);
-    setUserRole(t.role);
-    setLogged(true);
-    if (t.role === "front_desk") startLockTimer();
-    await db.post("admin_activity_log", {
-      user_name: t.name,
-      user_role: t.role,
-      action:    "Logged in",
-      logged_at: new Date().toISOString(),
-    });
+  /* ── PIN helpers ── */
+  const getPinForMember = (t) => {
+    if (t.id === "TM4y") return danielPin;
+    if (t.id === "TMBe") return marcoPin;
+    return fdPin;
+  };
+
+  const handleNameClick = (t) => {
+    if (Date.now() < pinLocked) return; // still locked
+    setPinStep(t);
+    setPinEntry("");
+    setPinError("");
+    setPinFails(0);
+  };
+
+  const handlePinKey = async (key) => {
+    if (Date.now() < pinLocked) return;
+    if (key === "del") { setPinEntry(p => p.slice(0, -1)); return; }
+    const next = (pinEntry + key).slice(0, 4);
+    setPinEntry(next);
+    if (next.length === 4) {
+      const correct = getPinForMember(pinStep);
+      if (next === correct) {
+        // success
+        setPinStep(null); setPinEntry(""); setPinError(""); setPinFails(0);
+        setUN(pinStep.name); setUserRole(pinStep.role); setLogged(true);
+        if (pinStep.role === "front_desk") startLockTimer();
+        await db.post("admin_activity_log", {
+          user_name: pinStep.name, user_role: pinStep.role,
+          action: "Logged in", logged_at: new Date().toISOString(),
+        });
+      } else {
+        const fails = pinFails + 1;
+        setPinFails(fails);
+        setPinEntry("");
+        if (fails >= 3) {
+          setPinLocked(Date.now() + 30000);
+          setPinError("Too many attempts. Locked for 30 seconds.");
+          setPinFails(0);
+        } else {
+          setPinError(\`Incorrect PIN (\${3 - fails} \${3 - fails === 1 ? "attempt" : "attempts"} left)\`);
+        }
+      }
+    }
+  };
+
+  /* ── Change PIN (owners only) ── */
+  const openChangePin = () => {
+    setCpStep(1); setCpCurrent(""); setCpNew(""); setCpConfirm(""); setCpError("");
+    setChangePinModal(true);
+  };
+
+  const handleChangePinKey = (key, which) => {
+    const setter = which === "current" ? setCpCurrent : which === "new" ? setCpNew : setCpConfirm;
+    const val    = which === "current" ? cpCurrent    : which === "new" ? cpNew    : cpConfirm;
+    if (key === "del") { setter(val.slice(0, -1)); return; }
+    setter((val + key).slice(0, 4));
+  };
+
+  const submitChangePin = async () => {
+    setCpError("");
+    const myPin = userRole === "owner" && uN === "Daniel Duran" ? danielPin : marcoPin;
+    if (cpCurrent !== myPin)   { setCpError("Current PIN is incorrect."); setCpCurrent(""); return; }
+    if (cpNew.length < 4)      { setCpError("New PIN must be 4 digits."); return; }
+    if (cpNew !== cpConfirm)   { setCpError("PINs don't match."); setCpConfirm(""); return; }
+    if (cpNew === cpCurrent)   { setCpError("New PIN must be different."); setCpNew(""); setCpConfirm(""); return; }
+    setCpSaving(true);
+    const field = uN === "Daniel Duran" ? "daniel_pin" : "marco_pin";
+    await db.patch("admin_settings", "id=gt.0", { [field]: cpNew });
+    if (uN === "Daniel Duran") setDanielPin(cpNew); else setMarcoPin(cpNew);
+    setCpSaving(false);
+    setChangePinModal(false);
+    fire("PIN updated successfully!");
+    await logActivity("Changed PIN");
   };
 
   /* ── Sign out ── */
@@ -138,26 +222,88 @@ export default function AdminApp() {
     : allNav;
 
   /* ══════════════ LOGIN SCREEN ══════════════ */
-  if (!logged) return (
-    <div style={LS.w}>
-      <style>{CSS}</style>
-      <div style={LS.c}>
-        <div style={{ textAlign: "center", marginBottom: 24 }}>
-          <h1 style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: "#0B2E1A", letterSpacing: 3 }}>BIRDIE GOLF STUDIOS</h1>
-          <p style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Admin Dashboard</p>
+  if (!logged) {
+    const locked     = Date.now() < pinLocked;
+    const lockSecs   = Math.ceil((pinLocked - Date.now()) / 1000);
+    const PIN_KEYS   = ["1","2","3","4","5","6","7","8","9","","0","del"];
+
+    return (
+      <div style={LS.w}>
+        <style>{CSS}
+          @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
+          .shake { animation: shake .4s ease; }
+        </style>
+        <div style={LS.c}>
+          <div style={{ textAlign: "center", marginBottom: 24 }}>
+            <h1 style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: "#0B2E1A", letterSpacing: 3 }}>BIRDIE GOLF STUDIOS</h1>
+            <p style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Admin Dashboard</p>
+          </div>
+
+          {!pinStep ? (
+            /* ── Step 1: pick name ── */
+            <>
+              {TEAM.map(t => (
+                <button key={t.id} style={{ ...LS.rb, opacity: locked ? 0.4 : 1 }} onClick={() => handleNameClick(t)}>
+                  <div style={LS.ri}>{t.name.split(" ").map(n => n[0]).join("")}</div>
+                  <div style={{ flex: 1, textAlign: "left" }}>
+                    <p style={{ fontSize: 14, fontWeight: 600 }}>{t.name}</p>
+                    <p style={{ fontSize: 11, color: "#888" }}>{t.title}</p>
+                  </div>
+                  <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
+                </button>
+              ))}
+              {locked && (
+                <p style={{ textAlign: "center", fontSize: 12, color: "#E03928", marginTop: 12 }}>
+                  Locked — try again in {lockSecs}s
+                </p>
+              )}
+            </>
+          ) : (
+            /* ── Step 2: PIN pad ── */
+            <>
+              <button onClick={() => { setPinStep(null); setPinEntry(""); setPinError(""); }}
+                style={{ background: "none", border: "none", color: "#888", fontSize: 12, cursor: "pointer", fontFamily: ff, marginBottom: 16, display: "flex", alignItems: "center", gap: 4 }}>
+                ← Back
+              </button>
+              <div style={{ textAlign: "center", marginBottom: 20 }}>
+                <div style={{ ...LS.ri, margin: "0 auto 10px", width: 48, height: 48, fontSize: 15 }}>
+                  {pinStep.name.split(" ").map(n => n[0]).join("")}
+                </div>
+                <p style={{ fontSize: 15, fontWeight: 700 }}>{pinStep.name}</p>
+                <p style={{ fontSize: 12, color: "#888" }}>Enter your PIN</p>
+              </div>
+
+              {/* PIN dots */}
+              <div className={pinError ? "shake" : ""} style={{ display: "flex", justifyContent: "center", gap: 14, marginBottom: 8 }}>
+                {[0,1,2,3].map(i => (
+                  <div key={i} style={{ width: 14, height: 14, borderRadius: "50%",
+                    background: i < pinEntry.length ? "#0B2E1A" : "#e8e8e6",
+                    transition: "background .15s" }} />
+                ))}
+              </div>
+              {pinError && <p style={{ textAlign: "center", fontSize: 12, color: "#E03928", marginBottom: 8 }}>{pinError}</p>}
+
+              {/* Keypad */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 16 }}>
+                {PIN_KEYS.map((k, i) => k === "" ? (
+                  <div key={i} />
+                ) : (
+                  <button key={i} onClick={() => handlePinKey(k)}
+                    style={{ padding: "16px 8px", borderRadius: 12, border: "1px solid #e8e8e6",
+                      background: "#fff", fontSize: k === "del" ? 13 : 20, fontWeight: 600,
+                      cursor: "pointer", fontFamily: k === "del" ? ff : mono,
+                      color: "#1a1a1a", transition: "background .1s" }}
+                    onMouseDown={e => e.currentTarget.style.background = "#f0f0ee"}
+                    onMouseUp={e => e.currentTarget.style.background = "#fff"}
+                  >{k === "del" ? "⌫" : k}</button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
-        {TEAM.map(t => (
-          <button key={t.id} style={LS.rb} onClick={() => login(t)}>
-            <div style={LS.ri}>{t.name.split(" ").map(n => n[0]).join("")}</div>
-            <div style={{ flex: 1, textAlign: "left" }}>
-              <p style={{ fontSize: 14, fontWeight: 600 }}>{t.name}</p>
-              <p style={{ fontSize: 11, color: "#888" }}>{t.title}</p>
-            </div>
-          </button>
-        ))}
       </div>
-    </div>
-  );
+    );
+  }
 
   /* ══════════════ MAIN APP ══════════════ */
   return (
@@ -175,7 +321,12 @@ export default function AdminApp() {
             </button>
           ))}
         </div>
-        <div style={{ padding: "12px 16px", borderTop: "1px solid #1a3d2a" }}>
+        <div style={{ padding: "12px 16px", borderTop: "1px solid #1a3d2a", display: "flex", flexDirection: "column", gap: 8 }}>
+          {userRole === "owner" && (
+            <button style={{ background: "none", border: "none", color: "#ffffff66", fontSize: 11, cursor: "pointer", fontFamily: ff, display: "flex", alignItems: "center", gap: 6 }} onClick={openChangePin}>
+              {X.lock(14)} Change PIN
+            </button>
+          )}
           <button style={{ background: "none", border: "none", color: "#ffffff66", fontSize: 11, cursor: "pointer", fontFamily: ff, display: "flex", alignItems: "center", gap: 6 }} onClick={signOut}>
             {X.out(14)} Sign Out
           </button>
@@ -191,6 +342,57 @@ export default function AdminApp() {
           {view === "facility" && <FacilityTab     bayBlocks={bayBlocks} setBayBlocks={setBayBlocks} cfg={cfg} setCfg={setCfg} hoursConfig={hoursConfig} setHoursConfig={setHoursConfig} fdPin={fdPin} setFdPin={setFdPin} userRole={userRole} fire={fire} reload={load} logActivity={logActivity} enrollmentFeeEnabled={enrollmentFeeEnabled} setEnrollmentFeeEnabled={setEnrollmentFeeEnabled} />}
         </div>
       </div>
+
+      {/* ── Change PIN Modal ── */}
+      {changePinModal && (() => {
+        const CP_KEYS = ["1","2","3","4","5","6","7","8","9","","0","del"];
+        const activeVal    = cpStep === 1 ? cpCurrent : cpStep === 2 ? cpNew : cpConfirm;
+        const activeWhich  = cpStep === 1 ? "current" : cpStep === 2 ? "new" : "confirm";
+        const stepLabel    = cpStep === 1 ? "Enter current PIN" : cpStep === 2 ? "Enter new PIN" : "Confirm new PIN";
+        const canAdvance   = activeVal.length === 4;
+        return (
+          <div style={S.ov} onClick={() => setChangePinModal(false)}>
+            <div style={{ ...S.mod, maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+              <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Change PIN</h3>
+              <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>{stepLabel}</p>
+
+              {/* dots */}
+              <div style={{ display: "flex", justifyContent: "center", gap: 14, marginBottom: 8 }}>
+                {[0,1,2,3].map(i => (
+                  <div key={i} style={{ width: 14, height: 14, borderRadius: "50%",
+                    background: i < activeVal.length ? "#0B2E1A" : "#e8e8e6",
+                    transition: "background .15s" }} />
+                ))}
+              </div>
+              {cpError && <p style={{ textAlign: "center", fontSize: 12, color: "#E03928", marginBottom: 8 }}>{cpError}</p>}
+
+              {/* keypad */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 12, marginBottom: 16 }}>
+                {CP_KEYS.map((k, i) => k === "" ? <div key={i} /> : (
+                  <button key={i} onClick={() => handleChangePinKey(k, activeWhich)}
+                    style={{ padding: "14px 8px", borderRadius: 12, border: "1px solid #e8e8e6",
+                      background: "#fff", fontSize: k === "del" ? 13 : 18, fontWeight: 600,
+                      cursor: "pointer", fontFamily: k === "del" ? ff : mono, color: "#1a1a1a" }}
+                  >{k === "del" ? "⌫" : k}</button>
+                ))}
+              </div>
+
+              {canAdvance && cpStep < 3 && (
+                <button style={S.b1} onClick={() => { setCpError(""); setCpStep(s => s + 1); }}>
+                  Continue
+                </button>
+              )}
+              {canAdvance && cpStep === 3 && (
+                <button style={S.b1} disabled={cpSaving} onClick={submitChangePin}>
+                  {cpSaving ? "Saving..." : "Save New PIN"}
+                </button>
+              )}
+              <button style={{ ...S.b1, background: "#f0f0ee", color: "#555", marginTop: 8 }}
+                onClick={() => setChangePinModal(false)}>Cancel</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {toast && <div style={S.toast}>{toast}</div>}
       {loading && <div style={{ position: "fixed", top: 12, right: 12, background: GREEN, color: "#fff", padding: "6px 14px", borderRadius: 8, fontSize: 11, fontWeight: 600, zIndex: 200 }}>Loading...</div>}
