@@ -255,10 +255,7 @@ export default function AdminApp() {
 
     return (
       <div style={LS.w}>
-        <style>{CSS}
-          @keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
-          .shake { animation: shake .4s ease; }
-        </style>
+        <style>{CSS}</style>
         <div style={LS.c}>
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <h1 style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: "#0B2E1A", letterSpacing: 3 }}>BIRDIE GOLF STUDIOS</h1>
