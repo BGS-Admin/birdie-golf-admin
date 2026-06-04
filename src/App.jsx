@@ -163,11 +163,6 @@ export default function AdminApp() {
   };
 
   const handleNameClick = (t) => {
-    if (t.id === "TMfd") {
-      // show staff picker instead of PIN pad directly
-      setFdStaffStep("pick");
-      return;
-    }
     setPinStep(t);
     setPinEntry("");
     setPinError("");
@@ -196,8 +191,9 @@ export default function AdminApp() {
         const resolved = resolveAdmin(next);
         if (resolved) { matched = true; loginName = resolved.name; }
       } else {
-        // Front desk staff — exact PIN match
-        matched = next === pinStep.pin;
+        // Front desk — match PIN against all active staff
+        const staffMatch = fdStaff.find(s => s.pin === next && s.active);
+        if (staffMatch) { matched = true; loginName = staffMatch.name; }
       }
 
       if (matched) {
@@ -278,7 +274,7 @@ export default function AdminApp() {
             <p style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Admin Dashboard</p>
           </div>
 
-          {!pinStep && fdStaffStep !== "pick" ? (
+          {!pinStep ? (
             /* ── Step 1: pick role ── */
             <>
               {/* Single Admin button for both owners */}
@@ -290,9 +286,9 @@ export default function AdminApp() {
                 </div>
                 <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
               </button>
-              {/* Front Desk group button */}
+              {/* Front Desk button — go straight to PIN pad */}
               {fdStaff.length > 0 && (
-                <button style={LS.rb} onClick={() => setFdStaffStep("pick")}>
+                <button style={LS.rb} onClick={() => handleNameClick({ id: "fd", name: "Front Desk", role: "front_desk" })}>
                   <div style={{ ...LS.ri, background: "#3A3A5C" }}>FD</div>
                   <div style={{ flex: 1, textAlign: "left" }}>
                     <p style={{ fontSize: 14, fontWeight: 600 }}>Front Desk</p>
@@ -304,25 +300,6 @@ export default function AdminApp() {
 
             </>
 
-          ) : fdStaffStep === "pick" ? (
-            /* ── Step 1b: pick staff member ── */
-            <>
-              <button onClick={() => setFdStaffStep(null)}
-                style={{ background: "none", border: "none", color: "#888", fontSize: 12, cursor: "pointer", fontFamily: ff, marginBottom: 16, display: "flex", alignItems: "center", gap: 4 }}>
-                ← Back
-              </button>
-              <p style={{ fontSize: 13, fontWeight: 700, color: "#0B2E1A", marginBottom: 12, textAlign: "center", letterSpacing: 1 }}>SELECT STAFF MEMBER</p>
-              {fdStaff.map(s => (
-                <button key={s.id} style={LS.rb} onClick={() => handleStaffPick(s)}>
-                  <div style={{ ...LS.ri, background: "#3A3A5C" }}>{s.name.slice(0,2).toUpperCase()}</div>
-                  <div style={{ flex: 1, textAlign: "left" }}>
-                    <p style={{ fontSize: 14, fontWeight: 600 }}>{s.name}</p>
-                    <p style={{ fontSize: 11, color: "#888" }}>Front Desk</p>
-                  </div>
-                  <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
-                </button>
-              ))}
-            </>
           ) : (
             /* ── Step 2: PIN pad ── */
             <>
@@ -332,30 +309,20 @@ export default function AdminApp() {
               </button>
               <div style={{ textAlign: "center", marginBottom: 20 }}>
                 <div style={{ ...LS.ri, margin: "0 auto 10px", width: 48, height: 48, fontSize: 15 }}>
-                  {pinStep.id === "admin" ? "AD" : pinStep.name.split(" ").map(n => n[0]).join("")}
+                  {pinStep.id === "admin" ? "AD" : pinStep.id === "fd" ? "FD" : pinStep.name.split(" ").map(n => n[0]).join("")}
                 </div>
                 <p style={{ fontSize: 15, fontWeight: 700 }}>{pinStep.name}</p>
                 <p style={{ fontSize: 12, color: "#888" }}>Enter your PIN</p>
               </div>
 
-              {/* Hidden input for mobile numeric keyboard */}
+              {/* Hidden input — mobile numeric keyboard only, keydown handles actual input */}
               <input
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
                 autoFocus
-                value={pinEntry}
-                onChange={e => {
-                  const val = e.target.value.replace(/\D/g,"").slice(0,4);
-                  // feed each new digit through handlePinKey
-                  if (val.length > pinEntry.length) {
-                    handlePinKey(val[val.length - 1]);
-                  } else if (val.length < pinEntry.length) {
-                    handlePinKey("del");
-                  }
-                }}
+                readOnly
                 style={{ position: "absolute", opacity: 0, width: 1, height: 1, pointerEvents: "none" }}
-                readOnly={false}
               />
 
               {/* PIN dots */}
@@ -396,8 +363,16 @@ export default function AdminApp() {
       <style>{CSS}</style>
       <div style={S.side}>
         <div style={{ padding: "20px 16px 12px", borderBottom: "1px solid #1a3d2a" }}>
-          <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, letterSpacing: 2, color: "#fff" }}>BGS ADMIN</span>
-          <p style={{ fontSize: 10, color: "#ffffff66", marginTop: 4 }}>{uN}</p>
+          <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, letterSpacing: 2, color: "#ffffff66" }}>BGS ADMIN</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 7, background: userRole === "owner" ? GREEN : "#3A3A5C", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff", fontFamily: mono, flexShrink: 0 }}>
+              {uN.split(" ").map(n => n[0]).join("").slice(0,2).toUpperCase()}
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#fff", lineHeight: 1.2 }}>{uN}</p>
+              <p style={{ fontSize: 10, color: "#ffffff55", marginTop: 1 }}>{userRole === "owner" ? "Owner" : "Front Desk"}</p>
+            </div>
+          </div>
         </div>
         <div style={{ padding: "8px", flex: 1 }}>
           {nav.map(n => (
