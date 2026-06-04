@@ -137,6 +137,17 @@ export default function AdminApp() {
 
   useEffect(() => { if (logged) load(); }, [logged, load]);
 
+  /* ── Keyboard input for PIN pad ── */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!pinStep) return;
+      if (e.key >= "0" && e.key <= "9") handlePinKey(e.key);
+      if (e.key === "Backspace") handlePinKey("del");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pinStep, pinEntry, pinFails, pinError]);
+
   /* ── PIN helpers ── */
   const getPinForMember = (t) => {
     if (t.id === "TM4y") return danielPin;
@@ -147,7 +158,6 @@ export default function AdminApp() {
   };
 
   const handleNameClick = (t) => {
-    if (Date.now() < pinLocked) return;
     if (t.id === "TMfd") {
       // show staff picker instead of PIN pad directly
       setFdStaffStep("pick");
@@ -168,7 +178,6 @@ export default function AdminApp() {
   };
 
   const handlePinKey = async (key) => {
-    if (Date.now() < pinLocked) return;
     if (key === "del") { setPinEntry(p => p.slice(0, -1)); return; }
     const next = (pinEntry + key).slice(0, 4);
     setPinEntry(next);
@@ -187,13 +196,7 @@ export default function AdminApp() {
         const fails = pinFails + 1;
         setPinFails(fails);
         setPinEntry("");
-        if (fails >= 3) {
-          setPinLocked(Date.now() + 30000);
-          setPinError("Too many attempts. Locked for 30 seconds.");
-          setPinFails(0);
-        } else {
-          setPinError(`Incorrect PIN (${3 - fails} ${3 - fails === 1 ? "attempt" : "attempts"} left)`);
-        }
+        setPinError(`Incorrect PIN — try again`);
       }
     }
   };
@@ -249,9 +252,7 @@ export default function AdminApp() {
 
   /* ══════════════ LOGIN SCREEN ══════════════ */
   if (!logged) {
-    const locked     = Date.now() < pinLocked;
-    const lockSecs   = Math.ceil((pinLocked - Date.now()) / 1000);
-    const PIN_KEYS   = ["1","2","3","4","5","6","7","8","9","","0","del"];
+    const PIN_KEYS = ["1","2","3","4","5","6","7","8","9","","0","del"];
 
     return (
       <div style={LS.w}>
@@ -266,7 +267,7 @@ export default function AdminApp() {
             /* ── Step 1: pick name ── */
             <>
               {TEAM.map(t => (
-                <button key={t.id} style={{ ...LS.rb, opacity: locked ? 0.4 : 1 }} onClick={() => handleNameClick(t)}>
+                <button key={t.id} style={LS.rb} onClick={() => handleNameClick(t)}>
                   <div style={LS.ri}>{t.name.split(" ").map(n => n[0]).join("")}</div>
                   <div style={{ flex: 1, textAlign: "left" }}>
                     <p style={{ fontSize: 14, fontWeight: 600 }}>{t.name}</p>
@@ -277,7 +278,7 @@ export default function AdminApp() {
               ))}
               {/* Front Desk group button */}
               {fdStaff.length > 0 && (
-                <button style={{ ...LS.rb, opacity: locked ? 0.4 : 1 }} onClick={() => !locked && setFdStaffStep("pick")}>
+                <button style={LS.rb} onClick={() => setFdStaffStep("pick")}>
                   <div style={{ ...LS.ri, background: "#3A3A5C" }}>FD</div>
                   <div style={{ flex: 1, textAlign: "left" }}>
                     <p style={{ fontSize: 14, fontWeight: 600 }}>Front Desk</p>
@@ -286,11 +287,7 @@ export default function AdminApp() {
                   <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
                 </button>
               )}
-              {locked && (
-                <p style={{ textAlign: "center", fontSize: 12, color: "#E03928", marginTop: 12 }}>
-                  Locked — try again in {lockSecs}s
-                </p>
-              )}
+
             </>
 
           ) : fdStaffStep === "pick" ? (
@@ -326,6 +323,26 @@ export default function AdminApp() {
                 <p style={{ fontSize: 15, fontWeight: 700 }}>{pinStep.name}</p>
                 <p style={{ fontSize: 12, color: "#888" }}>Enter your PIN</p>
               </div>
+
+              {/* Hidden input for mobile numeric keyboard */}
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoFocus
+                value={pinEntry}
+                onChange={e => {
+                  const val = e.target.value.replace(/\D/g,"").slice(0,4);
+                  // feed each new digit through handlePinKey
+                  if (val.length > pinEntry.length) {
+                    handlePinKey(val[val.length - 1]);
+                  } else if (val.length < pinEntry.length) {
+                    handlePinKey("del");
+                  }
+                }}
+                style={{ position: "absolute", opacity: 0, width: 1, height: 1, pointerEvents: "none" }}
+                readOnly={false}
+              />
 
               {/* PIN dots */}
               <div className={pinError ? "shake" : ""} style={{ display: "flex", justifyContent: "center", gap: 14, marginBottom: 8 }}>
