@@ -46,6 +46,10 @@ export default function AdminApp() {
   const [danielPin,    setDanielPin]    = useState("1212");
   const [marcoPin,     setMarcoPin]     = useState("0101");
 
+  // Front desk staff (loaded from Supabase)
+  const [fdStaff,      setFdStaff]      = useState([]);
+  const [fdStaffStep,  setFdStaffStep]  = useState(null); // selected staff member
+
   const [customers,   setCustomers]   = useState([]);
   const [bookings,    setBookings]    = useState([]);
   const [bayBlocks,   setBayBlocks]   = useState([]);
@@ -56,6 +60,9 @@ export default function AdminApp() {
 
   /* ── Load settings on mount ── */
   useEffect(() => {
+    db.get("front_desk_staff", "select=*&order=id.asc&active=eq.true").then(rows => {
+      if (rows?.length) setFdStaff(rows);
+    });
     db.get("admin_settings", "select=*&limit=1").then(rows => {
       if (rows?.[0]) {
         if (rows[0].fd_pin)     setFdPin(rows[0].fd_pin);
@@ -109,6 +116,10 @@ export default function AdminApp() {
     setBookings( b  || []);
     setBayBlocks(bl || []);
     if (pr?.[0]) setCfg({ pk: pr[0].peak_rate, op: pr[0].off_peak_rate, wk: pr[0].weekend_rate });
+    // load front desk staff
+    const staff = await db.get("front_desk_staff", "select=*&order=id.asc&active=eq.true");
+    if (staff?.length) setFdStaff(staff);
+
     if (settings?.[0]) {
       if (settings[0].fd_pin)     setFdPin(settings[0].fd_pin);
       if (settings[0].daniel_pin) setDanielPin(settings[0].daniel_pin);
@@ -130,12 +141,27 @@ export default function AdminApp() {
   const getPinForMember = (t) => {
     if (t.id === "TM4y") return danielPin;
     if (t.id === "TMBe") return marcoPin;
+    // front desk staff: pin stored on the staff object itself
+    if (t.role === "front_desk") return t.pin;
     return fdPin;
   };
 
   const handleNameClick = (t) => {
-    if (Date.now() < pinLocked) return; // still locked
+    if (Date.now() < pinLocked) return;
+    if (t.id === "TMfd") {
+      // show staff picker instead of PIN pad directly
+      setFdStaffStep("pick");
+      return;
+    }
     setPinStep(t);
+    setPinEntry("");
+    setPinError("");
+    setPinFails(0);
+  };
+
+  const handleStaffPick = (staffMember) => {
+    setFdStaffStep(null);
+    setPinStep({ ...staffMember, role: "front_desk", id: "fd_" + staffMember.id });
     setPinEntry("");
     setPinError("");
     setPinFails(0);
@@ -239,7 +265,7 @@ export default function AdminApp() {
             <p style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Admin Dashboard</p>
           </div>
 
-          {!pinStep ? (
+          {!pinStep && fdStaffStep !== "pick" ? (
             /* ── Step 1: pick name ── */
             <>
               {TEAM.map(t => (
@@ -252,11 +278,42 @@ export default function AdminApp() {
                   <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
                 </button>
               ))}
+              {/* Front Desk group button */}
+              {fdStaff.length > 0 && (
+                <button style={{ ...LS.rb, opacity: locked ? 0.4 : 1 }} onClick={() => !locked && setFdStaffStep("pick")}>
+                  <div style={{ ...LS.ri, background: "#3A3A5C" }}>FD</div>
+                  <div style={{ flex: 1, textAlign: "left" }}>
+                    <p style={{ fontSize: 14, fontWeight: 600 }}>Front Desk</p>
+                    <p style={{ fontSize: 11, color: "#888" }}>{fdStaff.length} staff members</p>
+                  </div>
+                  <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
+                </button>
+              )}
               {locked && (
                 <p style={{ textAlign: "center", fontSize: 12, color: "#E03928", marginTop: 12 }}>
                   Locked — try again in {lockSecs}s
                 </p>
               )}
+            </>
+
+          ) : fdStaffStep === "pick" ? (
+            /* ── Step 1b: pick staff member ── */
+            <>
+              <button onClick={() => setFdStaffStep(null)}
+                style={{ background: "none", border: "none", color: "#888", fontSize: 12, cursor: "pointer", fontFamily: ff, marginBottom: 16, display: "flex", alignItems: "center", gap: 4 }}>
+                ← Back
+              </button>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#0B2E1A", marginBottom: 12, textAlign: "center", letterSpacing: 1 }}>SELECT STAFF MEMBER</p>
+              {fdStaff.map(s => (
+                <button key={s.id} style={LS.rb} onClick={() => handleStaffPick(s)}>
+                  <div style={{ ...LS.ri, background: "#3A3A5C" }}>{s.name.slice(0,2).toUpperCase()}</div>
+                  <div style={{ flex: 1, textAlign: "left" }}>
+                    <p style={{ fontSize: 14, fontWeight: 600 }}>{s.name}</p>
+                    <p style={{ fontSize: 11, color: "#888" }}>Front Desk</p>
+                  </div>
+                  <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
+                </button>
+              ))}
             </>
           ) : (
             /* ── Step 2: PIN pad ── */

@@ -23,9 +23,9 @@ export const TIERS = [
 
 // ⚠️  PRE-LAUNCH TODO: Add PIN auth (Daniel=1212, Marco=0101, Front Desk=2025 from Supabase)
 export const TEAM = [
-  { id: "TM4y", name: "Daniel Duran",   title: "Owner",      role: "owner"      },
-  { id: "TMBe", name: "Marco Montilla", title: "Owner",      role: "owner"      },
-  { id: "TMfd", name: "Front Desk",     title: "Front Desk", role: "front_desk" },
+  { id: "TM4y", name: "Daniel Duran",   title: "Owner", role: "owner" },
+  { id: "TMBe", name: "Marco Montilla", title: "Owner", role: "owner" },
+  // Front Desk staff are loaded dynamically from Supabase front_desk_staff table
 ];
 
 export const FD_LOCK_MINUTES = 120; // Front Desk auto-lock duration (minutes)

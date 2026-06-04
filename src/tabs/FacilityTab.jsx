@@ -36,6 +36,16 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hour
   const [pinError,   setPinError]   = useState("");
   const pinRefs = [React.useRef(), React.useRef(), React.useRef(), React.useRef()];
 
+  /* Front Desk Staff management */
+  const [fdStaff,      setFdStaff]      = useState([]);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffModal,   setStaffModal]   = useState(null); // null | { mode: "add"|"edit", staff: obj }
+  const [staffForm,    setStaffForm]    = useState({ name: "", pin: "" });
+  const [staffSaving,  setStaffSaving]  = useState(false);
+  const [staffError,   setStaffError]   = useState("");
+  const [resetPin,     setResetPin]     = useState(["","","",""]);
+  const resetPinRefs = [React.useRef(), React.useRef(), React.useRef(), React.useRef()];
+
   /* Activity log */
   const [actLog,     setActLog]     = useState([]);
   const [actLoading, setActLoading] = useState(false);
@@ -47,9 +57,12 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hour
   }, [hoursConfig]);
 
   useEffect(() => {
-    if (facTab === "coaches") loadSchedules();
-    if (facTab === "log")     loadLog();
+    if (facTab === "coaches")  loadSchedules();
+    if (facTab === "log")      loadLog();
+    if (facTab === "settings") loadStaff();
   }, [facTab]);
+
+  useEffect(() => { loadStaff(); }, []);
 
   const loadSchedules = async () => {
     const rows = await db.get("coach_schedules", "select=*");
@@ -105,6 +118,69 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hour
     await logActivity?.(`Updated hours of operation: Weekday ${hours.weekday_open}–${hours.weekday_close}, Weekend ${hours.weekend_open}–${hours.weekend_close}`);
     fire("Hours of operation saved ✓");
     setHoursSaving(false);
+  };
+
+  /* ── Front Desk Staff ── */
+  const loadStaff = async () => {
+    setStaffLoading(true);
+    const rows = await db.get("front_desk_staff", "select=*&order=id.asc");
+    setFdStaff(rows || []);
+    setStaffLoading(false);
+  };
+
+  const openAddStaff = () => {
+    setStaffForm({ name: "", pin: "" });
+    setStaffError("");
+    setStaffModal({ mode: "add" });
+  };
+
+  const openEditStaff = (s) => {
+    setResetPin(["","","",""]);
+    setStaffError("");
+    setStaffModal({ mode: "edit", staff: s });
+  };
+
+  const saveNewStaff = async () => {
+    setStaffError("");
+    if (!staffForm.name.trim())        { setStaffError("Name is required."); return; }
+    if (staffForm.pin.length !== 4)    { setStaffError("PIN must be 4 digits."); return; }
+    if (!/^\d{4}$/.test(staffForm.pin)) { setStaffError("PIN must be 4 numbers."); return; }
+    setStaffSaving(true);
+    await db.post("front_desk_staff", { name: staffForm.name.trim(), pin: staffForm.pin, active: true });
+    await logActivity?.(`Added front desk staff: ${staffForm.name.trim()}`);
+    fire(`${staffForm.name.trim()} added ✓`);
+    setStaffModal(null);
+    setStaffSaving(false);
+    loadStaff();
+  };
+
+  const saveStaffPin = async (staffId, staffName) => {
+    const pin = resetPin.join("");
+    if (pin.length !== 4) { setStaffError("PIN must be 4 digits."); return; }
+    setStaffSaving(true);
+    await db.patch("front_desk_staff", `id=eq.${staffId}`, { pin });
+    await logActivity?.(`Reset PIN for ${staffName}`);
+    fire(`PIN updated for ${staffName} ✓`);
+    setStaffModal(null);
+    setStaffSaving(false);
+    loadStaff();
+  };
+
+  const toggleStaffActive = async (s) => {
+    const next = !s.active;
+    await db.patch("front_desk_staff", `id=eq.${s.id}`, { active: next });
+    await logActivity?.(`${next ? "Activated" : "Deactivated"} front desk staff: ${s.name}`);
+    fire(`${s.name} ${next ? "activated" : "deactivated"} ✓`);
+    loadStaff();
+  };
+
+  const handleResetPinDigit = (i, val) => {
+    const d = val.replace(/\D/g,"").slice(0,1);
+    const next = [...resetPin]; next[i] = d; setResetPin(next);
+    if (d && i < 3) resetPinRefs[i+1]?.current?.focus();
+  };
+  const handleResetPinKey = (i, e) => {
+    if (e.key === "Backspace" && !resetPin[i] && i > 0) resetPinRefs[i-1]?.current?.focus();
   };
 
   /* ── Save Front Desk PIN ── */
@@ -390,33 +466,97 @@ export default function FacilityTab({ bayBlocks, setBayBlocks, cfg, setCfg, hour
             </div>
           </div>
 
-          {/* Front Desk PIN — owners only */}
+          {/* Front Desk Staff — owners only */}
           {userRole === "owner" && (
             <>
-              <h3 style={S.sh}>Front Desk PIN</h3>
-              <div style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, padding: 16, marginBottom: 14 }}>
-                <p style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>Current PIN: <span style={{ fontFamily: mono, fontWeight: 700, color: "#1a1a1a" }}>{"·".repeat(4)}</span> &nbsp;·&nbsp; Enter a new 4-digit PIN below.</p>
-                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                  {newPin.map((d, i) => (
-                    <input
-                      key={i}
-                      ref={pinRefs[i]}
-                      style={{ width: 52, height: 56, textAlign: "center", fontSize: 22, fontWeight: 700, fontFamily: mono, border: `2px solid ${pinError ? "#E03928" : d ? GREEN : "#e8e8e6"}`, borderRadius: 12, background: "#fafaf8" }}
-                      type="password"
-                      inputMode="numeric"
-                      maxLength={1}
-                      value={d}
-                      onChange={e => handlePinDigit(i, e.target.value)}
-                      onKeyDown={e => handlePinKey(i, e)}
-                    />
-                  ))}
-                </div>
-                {pinError && <p style={{ fontSize: 12, color: "#E03928", marginBottom: 8 }}>{pinError}</p>}
-                <button style={{ ...S.b1, opacity: newPin.join("").length === 4 ? 1 : 0.4 }} onClick={saveFdPin} disabled={pinSaving || newPin.join("").length !== 4}>
-                  {pinSaving ? "Saving..." : "Update Front Desk PIN"}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20, marginBottom: 12 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700 }}>Front Desk Staff</h3>
+                <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }} onClick={openAddStaff}>
+                  {X.plus(13)} Add Staff
                 </button>
               </div>
+              {staffLoading ? (
+                <p style={{ fontSize: 13, color: "#aaa" }}>Loading...</p>
+              ) : fdStaff.length === 0 ? (
+                <div style={S.empty}><p>No staff members yet</p></div>
+              ) : (
+                <div style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, overflow: "hidden", marginBottom: 14 }}>
+                  {fdStaff.map((s, i) => (
+                    <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < fdStaff.length - 1 ? "1px solid #f2f2f0" : "none", opacity: s.active ? 1 : 0.5 }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 9, background: "#3A3A5C", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, fontFamily: mono, flexShrink: 0 }}>
+                        {s.name.slice(0,2).toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontSize: 14, fontWeight: 600 }}>{s.name}</p>
+                        <p style={{ fontSize: 11, color: "#aaa" }}>{s.active ? "Active" : "Inactive"} · PIN: {"·".repeat(4)}</p>
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button style={{ ...GS.togBtn, fontSize: 11, padding: "6px 10px" }} onClick={() => openEditStaff(s)}>
+                          Reset PIN
+                        </button>
+                        <button style={{ ...GS.togBtn, fontSize: 11, padding: "6px 10px", color: s.active ? "#E03928" : GREEN, borderColor: s.active ? "#E03928" : GREEN }} onClick={() => toggleStaffActive(s)}>
+                          {s.active ? "Deactivate" : "Activate"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
+          )}
+
+          {/* ── Add Staff Modal ── */}
+          {staffModal?.mode === "add" && (
+            <div style={S.ov} onClick={() => setStaffModal(null)}>
+              <div style={{ ...S.mod, maxWidth: 380 }} onClick={e => e.stopPropagation()}>
+                <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Add Staff Member</h3>
+                <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>They'll use their PIN to log in to the admin app.</p>
+                <label style={GS.label}>NAME</label>
+                <input style={{ ...GS.input, marginBottom: 16 }} placeholder="Full name" value={staffForm.name}
+                  onChange={e => setStaffForm(p => ({ ...p, name: e.target.value }))} autoFocus />
+                <label style={GS.label}>PIN (4 digits)</label>
+                <input style={{ ...GS.input, marginBottom: 16, fontFamily: mono, letterSpacing: 8, fontSize: 20 }}
+                  type="password" inputMode="numeric" maxLength={4} placeholder="····"
+                  value={staffForm.pin} onChange={e => setStaffForm(p => ({ ...p, pin: e.target.value.replace(/\D/g,"").slice(0,4) }))} />
+                {staffError && <p style={{ fontSize: 12, color: "#E03928", marginBottom: 12 }}>{staffError}</p>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ ...GS.togBtn, flex: 1 }} onClick={() => setStaffModal(null)}>Cancel</button>
+                  <button style={{ ...S.b1, flex: 2, opacity: staffForm.name && staffForm.pin.length === 4 ? 1 : 0.4 }}
+                    disabled={staffSaving || !staffForm.name || staffForm.pin.length !== 4} onClick={saveNewStaff}>
+                    {staffSaving ? "Saving..." : "Add Staff Member"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Reset PIN Modal ── */}
+          {staffModal?.mode === "edit" && (
+            <div style={S.ov} onClick={() => setStaffModal(null)}>
+              <div style={{ ...S.mod, maxWidth: 340 }} onClick={e => e.stopPropagation()}>
+                <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Reset PIN</h3>
+                <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>Set a new PIN for <strong>{staffModal.staff.name}</strong></p>
+                <label style={GS.label}>NEW PIN</label>
+                <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+                  {resetPin.map((d, i) => (
+                    <input key={i} ref={resetPinRefs[i]}
+                      style={{ width: 52, height: 56, textAlign: "center", fontSize: 22, fontWeight: 700, fontFamily: mono, border: `2px solid ${staffError ? "#E03928" : d ? GREEN : "#e8e8e6"}`, borderRadius: 12, background: "#fafaf8" }}
+                      type="password" inputMode="numeric" maxLength={1} value={d}
+                      onChange={e => handleResetPinDigit(i, e.target.value)}
+                      onKeyDown={e => handleResetPinKey(i, e)} />
+                  ))}
+                </div>
+                {staffError && <p style={{ fontSize: 12, color: "#E03928", marginBottom: 12 }}>{staffError}</p>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ ...GS.togBtn, flex: 1 }} onClick={() => setStaffModal(null)}>Cancel</button>
+                  <button style={{ ...S.b1, flex: 2, opacity: resetPin.join("").length === 4 ? 1 : 0.4 }}
+                    disabled={staffSaving || resetPin.join("").length !== 4}
+                    onClick={() => saveStaffPin(staffModal.staff.id, staffModal.staff.name)}>
+                    {staffSaving ? "Saving..." : "Save PIN"}
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </>
       )}
