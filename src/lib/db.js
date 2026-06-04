@@ -1,5 +1,5 @@
 export const SB_URL = "https://dvaviudmsofyqttcazpw.supabase.co";
-export const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR2YXZpdWRtc29meXF0dGNhenB3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3ODc1MTgsImV4cCI6MjA5MDM2MzUxOH0.SWrAlnKZ33cIAQmn0dAQFfcAZ6b8qBZcp6Dyq2gMb2g";
+export const SB_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY;
 
 const H = {
   "apikey": SB_KEY,
