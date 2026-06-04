@@ -47,7 +47,7 @@ export default function AdminApp() {
   const [marcoPin,     setMarcoPin]     = useState("0101");
 
   // Front desk staff (loaded from Supabase)
-  const [fdStaff,      setFdStaff]      = useState([]);
+  const [fdStaff,      setFdStaff]      = useState(null); // null=loading, []=empty, [...]= loaded
   const [fdStaffStep,  setFdStaffStep]  = useState(null); // selected staff member
 
   const [customers,   setCustomers]   = useState([]);
@@ -192,7 +192,7 @@ export default function AdminApp() {
         if (resolved) { matched = true; loginName = resolved.name; }
       } else {
         // Front desk — match PIN against all active staff
-        const staffMatch = fdStaff.find(s => s.pin === next && s.active);
+        const staffMatch = (fdStaff || []).find(s => s.pin === next && s.active);
         if (staffMatch) { matched = true; loginName = staffMatch.name; }
       }
 
@@ -286,17 +286,15 @@ export default function AdminApp() {
                 </div>
                 <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
               </button>
-              {/* Front Desk button — go straight to PIN pad */}
-              {fdStaff.length > 0 && (
-                <button style={LS.rb} onClick={() => handleNameClick({ id: "fd", name: "Front Desk", role: "front_desk" })}>
-                  <div style={{ ...LS.ri, background: "#3A3A5C" }}>FD</div>
-                  <div style={{ flex: 1, textAlign: "left" }}>
-                    <p style={{ fontSize: 14, fontWeight: 600 }}>Front Desk</p>
-                    <p style={{ fontSize: 11, color: "#888" }}>{fdStaff.length} staff members</p>
-                  </div>
-                  <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
-                </button>
-              )}
+              {/* Front Desk button — always visible, staff loaded in background */}
+              <button style={LS.rb} onClick={() => handleNameClick({ id: "fd", name: "Front Desk", role: "front_desk" })}>
+                <div style={{ ...LS.ri, background: "#3A3A5C" }}>FD</div>
+                <div style={{ flex: 1, textAlign: "left" }}>
+                  <p style={{ fontSize: 14, fontWeight: 600 }}>Front Desk</p>
+                  <p style={{ fontSize: 11, color: "#888" }}>{fdStaff === null ? "Loading..." : `${fdStaff.length} staff members`}</p>
+                </div>
+                <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
+              </button>
 
             </>
 
