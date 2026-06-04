@@ -6,24 +6,34 @@ import { GREEN, PURPLE, RED, ORANGE, mono, ff, cn, S, GS, TIERS, X } from "../li
 const dateKey = (d) => d.toISOString().split("T")[0];
 const monthKey = (d) => d.toISOString().slice(0, 7);
 
-function getRange(period) {
+function getRange(period, customFrom, customTo) {
   const now = new Date();
   const y = now.getFullYear(), m = now.getMonth();
   if (period === "this_month") {
-    return { from: new Date(y, m, 1), to: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59) };
+    return { from: new Date(y, m, 1), to: new Date(y, m, now.getDate(), 23, 59, 59) };
   }
   if (period === "last_month") {
     return { from: new Date(y, m - 1, 1), to: new Date(y, m, 0, 23, 59, 59) };
   }
   if (period === "90_days") {
     const f = new Date(now); f.setDate(f.getDate() - 90);
-    return { from: f, to: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59) };
+    return { from: f, to: new Date(y, m, now.getDate(), 23, 59, 59) };
+  }
+  if (period === "custom") {
+    const f = customFrom ? new Date(customFrom + "T00:00:00") : new Date(y, m, 1);
+    const t = customTo   ? new Date(customTo   + "T23:59:59") : new Date(y, m, now.getDate(), 23, 59, 59);
+    return { from: f, to: t };
   }
   // all_time
-  return { from: new Date("2000-01-01"), to: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59) };
+  return { from: new Date("2000-01-01"), to: new Date(y, m, now.getDate(), 23, 59, 59) };
 }
 
 const fmt$ = (n) => "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const fmtDate = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const getRangeLabel = (from, to) => {
+  const a = fmtDate(from), b = fmtDate(to);
+  return a === b ? a : `${a} – ${b}`;
+};
 const fmtPct = (n) => Math.round(n || 0) + "%";
 
 /* ─── small UI pieces ─── */
@@ -51,11 +61,15 @@ const PERIODS = [
   { k: "last_month", l: "Last Month" },
   { k: "90_days",    l: "Last 90 Days" },
   { k: "all_time",   l: "All Time" },
+  { k: "custom",     l: "Custom" },
 ];
 
 /* ═══════════════════════════════════════════════════════════ */
 export default function ReportsTab({ bookings, customers }) {
   const [period,         setPeriod]         = useState("this_month");
+  const [customFrom,     setCustomFrom]     = useState(() => { const n = new Date(); return n.toISOString().split("T")[0]; });
+  const [customTo,       setCustomTo]       = useState(() => { const n = new Date(); return n.toISOString().split("T")[0]; });
+  const [singleDay,      setSingleDay]      = useState(false);
   const [txns,           setTxns]           = useState([]);
   const [loadingT,       setLoadingT]       = useState(true);
   const [showAllClients, setShowAllClients] = useState(false);
@@ -70,7 +84,7 @@ export default function ReportsTab({ bookings, customers }) {
     })();
   }, []);
 
-  const range = useMemo(() => getRange(period), [period]);
+  const range = useMemo(() => getRange(period, customFrom, singleDay ? customFrom : customTo), [period, customFrom, customTo, singleDay]);
 
   /* ── filter bookings & txns to selected period ── */
   const filteredBk = useMemo(() =>
@@ -244,26 +258,152 @@ export default function ReportsTab({ bookings, customers }) {
     count: activeMembers.filter(c => c.tier === t.id).length,
   }));
 
+  /* ══════════════════ EXPORT ══════════════════ */
+  const exportCSV = () => {
+    const rangeLabel = getRangeLabel(range.from, range.to);
+    const rows = [];
+
+    // Header
+    rows.push(["BIRDIE GOLF STUDIOS — Report Export"]);
+    rows.push([`Period: ${rangeLabel}`]);
+    rows.push([`Generated: ${new Date().toLocaleString("en-US")}`]);
+    rows.push([]);
+
+    // Revenue summary
+    rows.push(["REVENUE SUMMARY"]);
+    rows.push(["Category", "Amount"]);
+    rows.push(["Bay Revenue", fmt$(revBay)]);
+    rows.push(["Lesson Revenue", fmt$(revLesson)]);
+    rows.push(["Membership Revenue", fmt$(revMem)]);
+    rows.push(["Total Revenue", fmt$(totalRev)]);
+    rows.push(["MRR (Active Members)", fmt$(mrr)]);
+    rows.push([]);
+
+    // Utilization summary
+    rows.push(["UTILIZATION SUMMARY"]);
+    rows.push(["Metric", "Value"]);
+    rows.push(["Total Hours Booked", bookedHours.toFixed(1) + "h"]);
+    rows.push(["Overall Utilization", fmtPct(utilizationPct)]);
+    rows.push(["Avg Booking Duration", avgDuration > 0 ? avgDuration.toFixed(1) + "h" : "—"]);
+    rows.push([]);
+
+    // Bookings detail
+    rows.push(["BOOKINGS DETAIL"]);
+    rows.push(["Date", "Type", "Bay", "Customer", "Duration (hrs)", "Amount", "Status", "Coach"]);
+    filteredBk.forEach(b => {
+      const cust = customers.find(c => c.id === b.customer_id);
+      const name = cust ? ((cust.first_name || "") + " " + (cust.last_name || "")).trim() : "Walk-in";
+      rows.push([
+        b.date || "",
+        b.type || "",
+        b.bay || "",
+        name,
+        ((b.duration_slots || 2) * 0.5).toFixed(1),
+        "$" + Number(b.amount || 0).toFixed(2),
+        b.status || "",
+        b.coach_name || "",
+      ]);
+    });
+    rows.push([]);
+
+    // Members snapshot
+    rows.push(["MEMBERS SNAPSHOT"]);
+    rows.push(["Name", "Tier", "Credits Used", "Credits Remaining", "Renewal Date"]);
+    activeMembers.forEach(c => {
+      const total = c.bay_credits_total || 0;
+      const remaining = c.bay_credits_remaining || 0;
+      rows.push([
+        ((c.first_name || "") + " " + (c.last_name || "")).trim(),
+        c.tier || "",
+        Math.max(0, total - remaining),
+        remaining,
+        c.renewal_date || "",
+      ]);
+    });
+
+    // Build CSV string
+    const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `BGS-Report-${rangeLabel.replace(/[^a-zA-Z0-9]/g, "-")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   /* ══════════════════ RENDER ══════════════════ */
   return (
     <div style={{ ...S.pad, maxWidth: 1100 }}>
       {/* Header + period filter */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700 }}>Reports</h2>
-        <div style={{ display: "flex", gap: 4, background: "#f0f0ee", borderRadius: 10, padding: 3 }}>
-          {PERIODS.map(p => (
-            <button
-              key={p.k}
-              style={{ padding: "7px 12px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff,
-                background: period === p.k ? "#fff" : "transparent",
-                color: period === p.k ? "#1a1a1a" : "#888",
-                boxShadow: period === p.k ? "0 1px 4px rgba(0,0,0,.08)" : "none",
-              }}
-              onClick={() => setPeriod(p.k)}
-            >{p.l}</button>
-          ))}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: period === "custom" ? 12 : 20 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 2 }}>Reports</h2>
+          <p style={{ fontSize: 12, color: "#aaa", fontFamily: mono }}>{getRangeLabel(range.from, range.to)}</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            onClick={exportCSV}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #e8e8e6", background: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, color: "#1a1a1a" }}
+          >
+            {X.download ? X.download(14) : "↓"} Export CSV
+          </button>
+          <div style={{ display: "flex", gap: 4, background: "#f0f0ee", borderRadius: 10, padding: 3 }}>
+            {PERIODS.map(p => (
+              <button
+                key={p.k}
+                style={{ padding: "7px 12px", borderRadius: 8, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff,
+                  background: period === p.k ? "#fff" : "transparent",
+                  color: period === p.k ? "#1a1a1a" : "#888",
+                  boxShadow: period === p.k ? "0 1px 4px rgba(0,0,0,.08)" : "none",
+                }}
+                onClick={() => setPeriod(p.k)}
+              >{p.l}</button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {/* Custom date picker */}
+      {period === "custom" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, padding: "12px 16px", background: "#f8f8f6", borderRadius: 12, border: "1px solid #e8e8e6" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "#555", cursor: "pointer", userSelect: "none" }}>
+            <input
+              type="checkbox"
+              checked={singleDay}
+              onChange={e => setSingleDay(e.target.checked)}
+              style={{ accentColor: GREEN }}
+            />
+            Single Day
+          </label>
+          <div style={{ width: 1, height: 20, background: "#e8e8e6" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, color: "#888", fontWeight: 600 }}>{singleDay ? "Date" : "From"}</span>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={e => { setCustomFrom(e.target.value); if (singleDay) setCustomTo(e.target.value); }}
+              style={{ fontSize: 12, padding: "6px 10px", borderRadius: 8, border: "1px solid #e8e8e6", fontFamily: ff, background: "#fff", color: "#1a1a1a" }}
+            />
+          </div>
+          {!singleDay && (
+            <>
+              <span style={{ fontSize: 12, color: "#aaa" }}>–</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, color: "#888", fontWeight: 600 }}>To</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  min={customFrom}
+                  onChange={e => setCustomTo(e.target.value)}
+                  style={{ fontSize: 12, padding: "6px 10px", borderRadius: 8, border: "1px solid #e8e8e6", fontFamily: ff, background: "#fff", color: "#1a1a1a" }}
+                />
+              </div>
+            </>
+          )}
+          <span style={{ fontSize: 11, color: "#aaa", marginLeft: "auto" }}>{filteredBk.length} booking{filteredBk.length !== 1 ? "s" : ""} in range</span>
+        </div>
+      )}
 
       {/* ── REVENUE ── */}
       <SectionTitle>Revenue</SectionTitle>
