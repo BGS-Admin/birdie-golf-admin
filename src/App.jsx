@@ -149,12 +149,17 @@ export default function AdminApp() {
   }, [pinStep, pinEntry, pinFails, pinError]);
 
   /* ── PIN helpers ── */
+  // For the combined Admin button, resolve which owner entered the PIN
+  const resolveAdmin = (pin) => {
+    if (pin === danielPin) return { name: "Daniel Duran", field: "daniel_pin" };
+    if (pin === marcoPin)  return { name: "Marco Montilla", field: "marco_pin" };
+    return null;
+  };
+
   const getPinForMember = (t) => {
-    if (t.id === "TM4y") return danielPin;
-    if (t.id === "TMBe") return marcoPin;
     // front desk staff: pin stored on the staff object itself
     if (t.role === "front_desk") return t.pin;
-    return fdPin;
+    return null; // admin: checked differently via resolveAdmin
   };
 
   const handleNameClick = (t) => {
@@ -182,21 +187,31 @@ export default function AdminApp() {
     const next = (pinEntry + key).slice(0, 4);
     setPinEntry(next);
     if (next.length === 4) {
-      const correct = getPinForMember(pinStep);
-      if (next === correct) {
-        // success
+      let loginName = pinStep.name;
+      let loginRole = pinStep.role;
+      let matched   = false;
+
+      if (pinStep.role === "owner") {
+        // Admin button — check both PINs and resolve the real name
+        const resolved = resolveAdmin(next);
+        if (resolved) { matched = true; loginName = resolved.name; }
+      } else {
+        // Front desk staff — exact PIN match
+        matched = next === pinStep.pin;
+      }
+
+      if (matched) {
         setPinStep(null); setPinEntry(""); setPinError(""); setPinFails(0);
-        setUN(pinStep.name); setUserRole(pinStep.role); setLogged(true);
-        if (pinStep.role === "front_desk") startLockTimer();
+        setUN(loginName); setUserRole(loginRole); setLogged(true);
+        if (loginRole === "front_desk") startLockTimer();
         await db.post("admin_activity_log", {
-          user_name: pinStep.name, user_role: pinStep.role,
+          user_name: loginName, user_role: loginRole,
           action: "Logged in", logged_at: new Date().toISOString(),
         });
       } else {
-        const fails = pinFails + 1;
-        setPinFails(fails);
+        setPinFails(f => f + 1);
         setPinEntry("");
-        setPinError(`Incorrect PIN — try again`);
+        setPinError("Incorrect PIN — try again");
       }
     }
   };
@@ -216,15 +231,15 @@ export default function AdminApp() {
 
   const submitChangePin = async () => {
     setCpError("");
-    const myPin = userRole === "owner" && uN === "Daniel Duran" ? danielPin : marcoPin;
-    if (cpCurrent !== myPin)   { setCpError("Current PIN is incorrect."); setCpCurrent(""); return; }
-    if (cpNew.length < 4)      { setCpError("New PIN must be 4 digits."); return; }
-    if (cpNew !== cpConfirm)   { setCpError("PINs don't match."); setCpConfirm(""); return; }
-    if (cpNew === cpCurrent)   { setCpError("New PIN must be different."); setCpNew(""); setCpConfirm(""); return; }
+    // Verify current PIN and identify which owner
+    const resolved = resolveAdmin(cpCurrent);
+    if (!resolved || resolved.name !== uN) { setCpError("Current PIN is incorrect."); setCpCurrent(""); return; }
+    if (cpNew.length < 4)    { setCpError("New PIN must be 4 digits."); return; }
+    if (cpNew !== cpConfirm) { setCpError("PINs don't match."); setCpConfirm(""); return; }
+    if (cpNew === cpCurrent) { setCpError("New PIN must be different."); setCpNew(""); setCpConfirm(""); return; }
     setCpSaving(true);
-    const field = uN === "Daniel Duran" ? "daniel_pin" : "marco_pin";
-    await db.patch("admin_settings", "id=gt.0", { [field]: cpNew });
-    if (uN === "Daniel Duran") setDanielPin(cpNew); else setMarcoPin(cpNew);
+    await db.patch("admin_settings", "id=gt.0", { [resolved.field]: cpNew });
+    if (resolved.field === "daniel_pin") setDanielPin(cpNew); else setMarcoPin(cpNew);
     setCpSaving(false);
     setChangePinModal(false);
     fire("PIN updated successfully!");
@@ -264,18 +279,17 @@ export default function AdminApp() {
           </div>
 
           {!pinStep && fdStaffStep !== "pick" ? (
-            /* ── Step 1: pick name ── */
+            /* ── Step 1: pick role ── */
             <>
-              {TEAM.map(t => (
-                <button key={t.id} style={LS.rb} onClick={() => handleNameClick(t)}>
-                  <div style={LS.ri}>{t.name.split(" ").map(n => n[0]).join("")}</div>
-                  <div style={{ flex: 1, textAlign: "left" }}>
-                    <p style={{ fontSize: 14, fontWeight: 600 }}>{t.name}</p>
-                    <p style={{ fontSize: 11, color: "#888" }}>{t.title}</p>
-                  </div>
-                  <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
-                </button>
-              ))}
+              {/* Single Admin button for both owners */}
+              <button style={LS.rb} onClick={() => handleNameClick({ id: "admin", name: "Admin", role: "owner" })}>
+                <div style={LS.ri}>AD</div>
+                <div style={{ flex: 1, textAlign: "left" }}>
+                  <p style={{ fontSize: 14, fontWeight: 600 }}>Admin</p>
+                  <p style={{ fontSize: 11, color: "#888" }}>Owner access</p>
+                </div>
+                <span style={{ fontSize: 11, color: "#aaa" }}>{X.lock(14)}</span>
+              </button>
               {/* Front Desk group button */}
               {fdStaff.length > 0 && (
                 <button style={LS.rb} onClick={() => setFdStaffStep("pick")}>
@@ -318,7 +332,7 @@ export default function AdminApp() {
               </button>
               <div style={{ textAlign: "center", marginBottom: 20 }}>
                 <div style={{ ...LS.ri, margin: "0 auto 10px", width: 48, height: 48, fontSize: 15 }}>
-                  {pinStep.name.split(" ").map(n => n[0]).join("")}
+                  {pinStep.id === "admin" ? "AD" : pinStep.name.split(" ").map(n => n[0]).join("")}
                 </div>
                 <p style={{ fontSize: 15, fontWeight: 700 }}>{pinStep.name}</p>
                 <p style={{ fontSize: 12, color: "#888" }}>Enter your PIN</p>
