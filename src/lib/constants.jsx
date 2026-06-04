@@ -12,7 +12,7 @@ export const RED    = "#E03928";
 export const TC = { none: "#888", starter: "#7AB89A", early_birdie: "#4A8B6E", player: GREEN, champion: "#124A2B" };
 export const TN = { none: "Non-Member", starter: "Starter", early_birdie: "Early Birdie", player: "Player", champion: "Champion" };
 export const TB = { starter: "STR", early_birdie: "EBD", player: "PLR", champion: "CHP" };
-export const BK_C = { bay_member: GREEN, bay_walkin: "#888", lesson: PURPLE };
+export const BK_C = { bay_member: GREEN, bay_walkin: "#64748B", lesson: PURPLE };
 
 export const TIERS = [
   { id: "starter",      n: "Starter",      p: 45,  c: "#7AB89A", badge: "STR", hrs: 0,  perks: ["20% off hourly bay rate"] },

@@ -465,15 +465,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
+                        style={{ ...GS.booking, background: color, height: h, cursor: "pointer", zIndex: 3, borderRadius: 6 }}
                         onClick={() => openExisting(bk)}
                       >
-                        <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
+                        <p style={{ fontSize: 10, fontWeight: 700, color: "#fff", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
                         <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 1 }}>
-                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: TC[cust.tier], padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
-                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
-                          <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
-                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: color, background: "#ffffff33", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
+                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: color, background: "#ffffff33", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
+                          <span style={{ fontSize: 9, color: "#ffffffaa" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
+                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: color, background: "#ffffff33", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
                         </div>
                       </div>
                     </div>
