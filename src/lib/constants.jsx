@@ -15,10 +15,14 @@ export const TB = { starter: "STR", early_birdie: "EBD", player: "PLR", champion
 export const BK_C = { bay_member: GREEN, bay_walkin: "#64748B", lesson: PURPLE };
 
 export const TIERS = [
-  { id: "starter",      n: "Starter",      p: 45,  c: "#7AB89A", badge: "STR", hrs: 0,  perks: ["20% off hourly bay rate"] },
-  { id: "early_birdie", n: "Early Birdie", p: 150, c: "#4A8B6E", badge: "EBD", hrs: -1, perks: ["Unlimited bay access Mon-Fri 7am-4pm", "Full rate applies outside those hours", "Members-only events"] },
-  { id: "player",       n: "Player",       p: 200, c: GREEN,      badge: "PLR", hrs: 8,  perks: ["8 hrs bay rental/mo", "20% off additional hours", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
-  { id: "champion",     n: "Champion",     p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, perks: ["Unlimited bay rental (max 2hr/booking)", "15% off F&B", "10% off retail", "Club storage", "Members-only events"] },
+  { id: "starter",      n: "Starter",      p: 45,  c: "#7AB89A", badge: "STR", hrs: 0,  enrollment: 0,
+    perks: ["20% off hourly bay rate", "Club storage", "Members-only invites"] },
+  { id: "early_birdie", n: "Early Birdie", p: 150, c: "#4A8B6E", badge: "EBD", hrs: -1, enrollment: 50,
+    perks: ["Up to 2 non-peak hours per day", "20% off additional non-peak hours beyond 2 hrs", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
+  { id: "player",       n: "Player",       p: 200, c: GREEN,      badge: "PLR", hrs: 8,  enrollment: 75,
+    perks: ["8 hours / month", "20% off additional hours", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
+  { id: "champion",     n: "Champion",     p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, enrollment: 0,
+    perks: ["Unlimited hours", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
 ];
 
 // ⚠️  PRE-LAUNCH TODO: Add PIN auth (Daniel=1212, Marco=0101, Front Desk=2025 from Supabase)
