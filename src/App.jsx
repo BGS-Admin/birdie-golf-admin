@@ -227,24 +227,10 @@ export default function AdminApp() {
 
   const submitChangePin = async () => {
     setCpError("");
-    if (cpNew.length < 4)    { setCpError("New PIN must be 4 digits."); return; }
     if (cpNew !== cpConfirm) { setCpError("PINs don't match."); setCpConfirm(""); return; }
     if (cpNew === cpCurrent) { setCpError("New PIN must be different."); setCpNew(""); setCpConfirm(""); return; }
     setCpSaving(true);
-
-    // Fetch live PIN from Supabase to verify — never trust state alone
-    const rows = await db.get("admin_settings", "select=daniel_pin,marco_pin&limit=1");
-    const liveSettings = rows?.[0];
-    const field      = uN === "Daniel Duran" ? "daniel_pin" : "marco_pin";
-    const livePin    = liveSettings?.[field];
-
-    if (!livePin || cpCurrent !== livePin) {
-      setCpError("Current PIN is incorrect.");
-      setCpCurrent("");
-      setCpSaving(false);
-      return;
-    }
-
+    const field = uN === "Daniel Duran" ? "daniel_pin" : "marco_pin";
     await db.patch("admin_settings", "id=gt.0", { [field]: cpNew });
     if (field === "daniel_pin") setDanielPin(cpNew); else setMarcoPin(cpNew);
     setCpSaving(false);
@@ -447,8 +433,24 @@ export default function AdminApp() {
               </div>
 
               {canAdvance && cpStep < 3 && (
-                <button style={S.b1} onClick={() => { setCpError(""); setCpStep(s => s + 1); }}>
-                  Continue
+                <button style={S.b1} disabled={cpSaving} onClick={async () => {
+                  setCpError("");
+                  if (cpStep === 1) {
+                    // Verify current PIN against Supabase before advancing
+                    setCpSaving(true);
+                    const rows = await db.get("admin_settings", "select=daniel_pin,marco_pin&limit=1");
+                    const field   = uN === "Daniel Duran" ? "daniel_pin" : "marco_pin";
+                    const livePin = rows?.[0]?.[field];
+                    setCpSaving(false);
+                    if (!livePin || cpCurrent !== livePin) {
+                      setCpError("Current PIN is incorrect.");
+                      setCpCurrent("");
+                      return;
+                    }
+                  }
+                  setCpStep(s => s + 1);
+                }}>
+                  {cpSaving ? "Verifying..." : "Continue"}
                 </button>
               )}
               {canAdvance && cpStep === 3 && (
