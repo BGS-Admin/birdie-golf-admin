@@ -23,6 +23,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const [custSearch,setCustSearch]= useState("");
   const [custCards, setCustCards] = useState([]);     // payment methods for selected customer
   const [loadingCards, setLoadingCards] = useState(false);
+  const [lessonPkg,   setLessonPkg]   = useState(null); // active lesson package credit for selected coach
   const [refundModal, setRefundModal] = useState(null);
   const [saving,    setSaving]    = useState(false);
   const [resView,   setResView]   = useState("calendar");
@@ -35,6 +36,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     setSelB(null);
     setCustSearch("");
     setCustCards([]);
+    setLessonPkg(null);
     setRefundModal(null);
   }, []);
 
@@ -72,6 +74,16 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const cards = await db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`);
     setCustCards(cards || []);
     setLoadingCards(false);
+  }, []);
+
+  /* ── load lesson package credit for a customer + coach ── */
+  const loadLessonPkg = useCallback(async (custId, coachName) => {
+    if (!custId || !coachName) { setLessonPkg(null); return; }
+    const coachId = coachName.includes("Espinoza") ? "SE" : "NC";
+    const pkgs = await db.get("lesson_packages",
+      `customer_id=eq.${custId}&coach_id=eq.${coachId}&status=eq.active&remaining_credits=gt.0&select=*&order=expiry_date.asc&limit=1`
+    );
+    setLessonPkg(pkgs?.[0] || null);
   }, []);
 
   /* ── grid helpers ── */
@@ -210,21 +222,36 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const rate      = isPeak ? cfg.pk : cfg.op;
     const paidHrs   = creditInfo ? creditInfo.remain : hrs;
     // Lessons: not taxable. Bays: Square applies 7% via catalog.
-    const subtotal  = selB.cardId && selB.cardId !== "in_person" ? Math.round(paidHrs * rate * 100) / 100 : 0;
+    const usingLessonCredit = isLesson2 && lessonPkg && lessonPkg.remaining_credits > 0;
+    const subtotal  = usingLessonCredit ? 0 : (selB.cardId && selB.cardId !== "in_person" ? Math.round(paidHrs * rate * 100) / 100 : 0);
     const taxAmt    = isLesson2 ? 0 : Math.round(subtotal * TAX_RATE * 100) / 100;
     const amount    = Math.round((subtotal + taxAmt) * 100) / 100;
 
     // Charge via Square catalog (bay.charge or lesson.purchase)
     let sqPaymentId = null;
-    const isLesson = selB.type === "lesson";
+    const isLesson     = selB.type === "lesson";
+    const hasLessonPkg = isLesson && lessonPkg && lessonPkg.remaining_credits > 0;
 
-    if (subtotal > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
+    if (isLesson && hasLessonPkg && custObj?.square_customer_id) {
+      // $0 credit lesson — create $0 order for Square tracking
+      const coachName = selB.coach_name || "";
+      const orderRes = await sq("order.create", {
+        square_customer_id: custObj.square_customer_id,
+        apply_tax: false,
+        line_items: [{
+          name: `Lesson Credit · ${coachName}`,
+          quantity: "1",
+          base_price_money: { amount: 0, currency: "USD" },
+        }],
+      });
+      sqPaymentId = orderRes?.order?.id || null;
+    } else if (subtotal > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
       const sqCard = custCards.find(c => c.id === selB.cardId);
       if (sqCard?.square_card_id) {
         if (isLesson) {
-          // lesson.purchase — uses catalog item per coach + member status, no tax
+          // lesson.purchase — catalog item per coach + member status, no tax
           const isMember = !!(custObj?.tier && custObj.tier !== "none");
-          const coachId  = selB.coach_id || (selB.coach_name?.includes("Espinoza") ? "SE" : "NC");
+          const coachId  = selB.coach_name?.includes("Espinoza") ? "SE" : "NC";
           const chargeRes = await sq("lesson.purchase", {
             square_customer_id: custObj.square_customer_id,
             card_id: sqCard.square_card_id,
@@ -234,7 +261,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
           });
           sqPaymentId = chargeRes?.payment?.id || null;
         } else {
-          // bay.charge — uses catalog + applies 7% tax via Square
+          // bay.charge — catalog + 7% tax via Square
           const chargeRes = await sq("bay.charge", {
             square_customer_id: custObj.square_customer_id,
             card_id: sqCard.square_card_id,
@@ -257,17 +284,27 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       duration_slots:    durSlots,
       status:            "confirmed",
       amount,
-      credits_used:      creditsUsed,
+      credits_used:      hasLessonPkg ? 1 : creditsUsed,
       discount:          0,
       coach_name:        selB.type === "lesson" ? (selB.coach_name || "") : "",
       admin_notes:       selB.notes || "",
       square_payment_id: sqPaymentId,
     });
 
-    // Deduct credits
+    // Deduct bay credits
     if (creditsUsed > 0 && custObj?.id) {
       const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
       await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
+    }
+    // Deduct lesson package credit
+    if (hasLessonPkg && lessonPkg?.id) {
+      const newRemaining = Math.max(0, lessonPkg.remaining_credits - 1);
+      const newStatus    = newRemaining === 0 ? "exhausted" : "active";
+      await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, {
+        remaining_credits: newRemaining,
+        status: newStatus,
+      });
+      setLessonPkg(null);
     }
 
     // Transaction record
@@ -302,7 +339,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         duration:       durLabel,
         bay:            "Bay " + (selB.bay || 1),
         total:          "$" + amount.toFixed(2),
-        credits_used:   creditsUsed > 0 ? creditsUsed + " hr credit" + (creditsUsed > 1 ? "s" : "") : null,
+        credits_used:   hasLessonPkg ? "1 lesson credit" : (creditsUsed > 0 ? creditsUsed + " hr credit" + (creditsUsed > 1 ? "s" : "") : null),
         type:           selB.type === "lesson" ? "lesson_booking" : "bay_booking",
         coach:          selB.coach_name || undefined,
         payment_method: selB.cardId === "in_person" ? "In Person" : "Card on file",
@@ -588,6 +625,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                                 setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null, isWalkIn: false }));
                                 setCustSearch("");
                                 loadCards(c.id);
+                                setLessonPkg(null); // reset — will reload when coach picked
                               }}
                             >
                               <span style={{ fontWeight: 600 }}>{cn(c)}</span>
@@ -789,7 +827,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                     <button
                       key={c}
                       style={{ ...GS.togBtn, flex: 1, ...((selB.coach_name) === c ? { background: PURPLE, color: "#fff" } : {}) }}
-                      onClick={() => setSelB(p => ({ ...p, coach_name: c }))}
+                      onClick={() => { setSelB(p => ({ ...p, coach_name: c })); loadLessonPkg(selB?.custId, c); }}
                     >
                       {c.split(" ")[0]}
                     </button>
@@ -848,7 +886,22 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   const isLes     = (selB.type || "bay") === "lesson";
 
                   if (isLes) {
-                    // Lesson pricing: $120 member, $150 non-member (not taxable)
+                    // Check for lesson package credit
+                    if (lessonPkg && lessonPkg.remaining_credits > 0) {
+                      return (
+                        <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>1 lesson credit applied</span>
+                            <span style={{ fontSize: 12, color: "#888" }}>{lessonPkg.remaining_credits} remaining</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
+                            <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: GREEN }}>$0.00</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    // No credit — show member/non-member rate
                     const isMem    = !!(selB.custObj?.tier && selB.custObj.tier !== "none");
                     const lesPrice = isMem ? 120 : 150;
                     return (
