@@ -199,28 +199,32 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const creditInfo = custObj ? getCreditInfo(custObj, durSlots) : null;
     const creditsUsed = creditInfo ? creditInfo.used : 0;
 
-    // Calculate charge amount
-    const hrs    = durSlots * 0.5;
-    const d      = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-    const isWk   = d.getDay() === 0 || d.getDay() === 6;
-    const hour   = toH(selB.time || "9:00 AM");
-    const isPeak = !isWk && hour >= 17;
-    const rate   = isPeak ? cfg.pk : cfg.op;
+    // Calculate charge amount (subtotal pre-tax; Square applies 7% via catalog)
+    const TAX_RATE = 0.07;
+    const hrs     = durSlots * 0.5;
+    const d       = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+    const isWk    = d.getDay() === 0 || d.getDay() === 6;
+    const hour    = toH(selB.time || "9:00 AM");
+    const isPeak  = !isWk && hour >= 17;
+    const rate    = isPeak ? cfg.pk : cfg.op;
     const paidHrs = creditInfo ? creditInfo.remain : hrs;
-    let amount   = selB.cardId && selB.cardId !== "in_person" ? paidHrs * rate : 0;
+    const subtotal = selB.cardId && selB.cardId !== "in_person" ? Math.round(paidHrs * rate * 100) / 100 : 0;
+    const taxAmt   = Math.round(subtotal * TAX_RATE * 100) / 100;
+    const amount   = Math.round((subtotal + taxAmt) * 100) / 100;
 
-    // Charge card if applicable
+    // Charge via bay.charge (uses Square catalog — tax applied automatically by Square)
     let sqPaymentId = null;
-    if (amount > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
+    if (subtotal > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
       const sqCard = custCards.find(c => c.id === selB.cardId);
       if (sqCard?.square_card_id) {
-        const payment = await sq("payment.create", {
+        const chargeRes = await sq("bay.charge", {
           square_customer_id: custObj.square_customer_id,
           card_id: sqCard.square_card_id,
-          amount,
-          note: `Bay ${selB.bay} \u00b7 ${selB.date || dateKey(resDate)}`,
+          slots: durSlots,
+          is_peak: isPeak,
+          note: `Bay ${selB.bay} · ${selB.date || dateKey(resDate)} · ${paidHrs}hr`,
         });
-        sqPaymentId = payment?.payment?.id || null;
+        sqPaymentId = chargeRes?.payment?.id || null;
       }
     }
 
@@ -266,6 +270,32 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       const custName = custObj ? ((custObj.first_name||"")+" "+(custObj.last_name||"")).trim() : "Walk-in";
       await logBkChange(bk.id, "Created", custName + " · Bay " + bk.bay + " · " + bk.start_time);
     }
+    // Send confirmation email (same as booking app flow)
+    if (custObj?.email) {
+      const bkDate   = selB.date || dateKey(resDate);
+      const durLabel = (durSlots * 0.5) + "hr" + (durSlots > 2 ? "s" : "");
+      const fmtDate  = new Date(bkDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+      const emailData = {
+        customer_name:  ((custObj.first_name || "") + " " + (custObj.last_name || "")).trim(),
+        customer_email: custObj.email,
+        date:           fmtDate,
+        time:           selB.time || "9:00 AM",
+        duration:       durLabel,
+        bay:            "Bay " + (selB.bay || 1),
+        total:          "$" + amount.toFixed(2),
+        credits_used:   creditsUsed > 0 ? creditsUsed + " hr credit" + (creditsUsed > 1 ? "s" : "") : null,
+        type:           selB.type === "lesson" ? "lesson_booking" : "bay_booking",
+        coach:          selB.type === "lesson" ? (selB.coach_name || "") : undefined,
+        payment_method: selB.cardId === "in_person" ? "In Person" : "Card on file",
+        send_admin:     true,
+      };
+      sq("email.send", {
+        customer_email: custObj.email,
+        type:           emailData.type,
+        ...emailData,
+      }).catch(e => console.error("Email failed:", e));
+    }
+
     fire("Booking created ✓");
     setSaving(false);
     closeModal();
@@ -465,15 +495,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color, height: h, cursor: "pointer", zIndex: 3, borderRadius: 6 }}
+                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
-                        <p style={{ fontSize: 10, fontWeight: 700, color: "#fff", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
+                        <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
                         <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 1 }}>
-                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: color, background: "#ffffff33", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
-                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: color, background: "#ffffff33", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
-                          <span style={{ fontSize: 9, color: "#ffffffaa" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
-                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: color, background: "#ffffff33", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: TC[cust.tier], padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
+                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
+                          <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
+                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
                         </div>
                       </div>
                     </div>
@@ -795,6 +825,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
 
                 {/* Amount preview */}
                 {selB.cardId && selB.cardId !== "in_person" && (() => {
+                  const TAX_RATE = 0.07;
                   const durSlots = DUR_MAP[selB.dur] || 2;
                   const hrs = durSlots * 0.5;
                   const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
@@ -803,11 +834,23 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   const isPeak = !isWk && hour >= 17;
                   const rate  = isPeak ? cfg.pk : cfg.op;
                   const paidHrs = creditInfo ? creditInfo.remain : hrs;
-                  const amount  = paidHrs * rate;
+                  const subtotal = Math.round(paidHrs * rate * 100) / 100;
+                  const taxAmt   = Math.round(subtotal * TAX_RATE * 100) / 100;
+                  const total    = Math.round((subtotal + taxAmt) * 100) / 100;
                   return (
-                    <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(non-peak)"}</span>
-                      <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${amount.toFixed(2)}</span>
+                    <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(non-peak)"}</span>
+                        <span style={{ fontSize: 12, color: "#888" }}>${subtotal.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 12, color: "#888" }}>Tax (7%)</span>
+                        <span style={{ fontSize: 12, color: "#888" }}>${taxAmt.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
+                        <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${total.toFixed(2)}</span>
+                      </div>
                     </div>
                   );
                 })()}
