@@ -137,16 +137,27 @@ export default function AdminApp() {
 
   useEffect(() => { if (logged) load(); }, [logged, load]);
 
-  /* ── Keyboard input for PIN pad ── */
+  /* ── Keyboard input for PIN pad (login + change PIN modal) ── */
   useEffect(() => {
     const onKey = (e) => {
-      if (!pinStep) return;
-      if (e.key >= "0" && e.key <= "9") handlePinKey(e.key);
-      if (e.key === "Backspace") handlePinKey("del");
+      if (e.key >= "0" && e.key <= "9") {
+        if (pinStep)          handlePinKey(e.key);
+        else if (changePinModal) {
+          const which = cpStep === 1 ? "current" : cpStep === 2 ? "new" : "confirm";
+          handleChangePinKey(e.key, which);
+        }
+      }
+      if (e.key === "Backspace") {
+        if (pinStep)          handlePinKey("del");
+        else if (changePinModal) {
+          const which = cpStep === 1 ? "current" : cpStep === 2 ? "new" : "confirm";
+          handleChangePinKey("del", which);
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [pinStep, pinEntry, pinFails, pinError]);
+  }, [pinStep, pinEntry, pinFails, pinError, changePinModal, cpStep, cpCurrent, cpNew, cpConfirm]);
 
   /* ── PIN helpers ── */
   // For the combined Admin button, resolve which owner entered the PIN
@@ -411,6 +422,15 @@ export default function AdminApp() {
               <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Change PIN</h3>
               <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>{stepLabel}</p>
 
+              {/* Hidden input for mobile numeric keyboard */}
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoFocus
+                readOnly
+                style={{ position: "absolute", opacity: 0, width: 1, height: 1, pointerEvents: "none" }}
+              />
               {/* dots */}
               <div style={{ display: "flex", justifyContent: "center", gap: 14, marginBottom: 8 }}>
                 {[0,1,2,3].map(i => (
