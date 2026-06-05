@@ -6,6 +6,7 @@ import CustomersTab    from "./tabs/CustomersTab.jsx";
 import MembersTab      from "./tabs/MembersTab.jsx";
 import FacilityTab     from "./tabs/FacilityTab.jsx";
 import ReportsTab      from "./tabs/ReportsTab.jsx";
+import LessonsTab      from "./tabs/LessonsTab.jsx";
 
 // ⚠️  PRE-LAUNCH TODO: Add proper authentication before going live.
 //     - Owners: PIN login (Daniel=1212, Marco=0101) or Supabase Auth
@@ -262,6 +263,7 @@ export default function AdminApp() {
     { k: "res",      l: "Reservations", ic: X.cal    },
     { k: "cust",     l: "Customers",    ic: X.user   },
     { k: "members",  l: "Members",      ic: X.crown  },
+    { k: "lessons",  l: "Lessons",      ic: X.log    },
     { k: "reports",  l: "Reports",      ic: X.bar    },
     { k: "facility", l: "Facility",     ic: X.wrench },
   ];
@@ -405,6 +407,7 @@ export default function AdminApp() {
           {view === "cust"     && <CustomersTab    customers={customers} bookings={bookings} onRefresh={load} logActivity={logActivity} />}
           {view === "members"  && <MembersTab      customers={customers} fire={fire} reload={load} logActivity={logActivity} />}
           {view === "reports"  && <ReportsTab      bookings={bookings} customers={customers} />}
+          {view === "lessons"  && <LessonsTab      customers={customers} />}
           {view === "facility" && <FacilityTab     bayBlocks={bayBlocks} setBayBlocks={setBayBlocks} cfg={cfg} setCfg={setCfg} hoursConfig={hoursConfig} setHoursConfig={setHoursConfig} fdPin={fdPin} setFdPin={setFdPin} userRole={userRole} fire={fire} reload={load} logActivity={logActivity} enrollmentFeeEnabled={enrollmentFeeEnabled} setEnrollmentFeeEnabled={setEnrollmentFeeEnabled} />}
         </div>
       </div>
