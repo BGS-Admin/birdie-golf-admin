@@ -227,15 +227,26 @@ export default function AdminApp() {
 
   const submitChangePin = async () => {
     setCpError("");
-    // Verify current PIN and identify which owner
-    const resolved = resolveAdmin(cpCurrent);
-    if (!resolved || resolved.name !== uN) { setCpError("Current PIN is incorrect."); setCpCurrent(""); return; }
     if (cpNew.length < 4)    { setCpError("New PIN must be 4 digits."); return; }
     if (cpNew !== cpConfirm) { setCpError("PINs don't match."); setCpConfirm(""); return; }
     if (cpNew === cpCurrent) { setCpError("New PIN must be different."); setCpNew(""); setCpConfirm(""); return; }
     setCpSaving(true);
-    await db.patch("admin_settings", "id=gt.0", { [resolved.field]: cpNew });
-    if (resolved.field === "daniel_pin") setDanielPin(cpNew); else setMarcoPin(cpNew);
+
+    // Fetch live PIN from Supabase to verify — never trust state alone
+    const rows = await db.get("admin_settings", "select=daniel_pin,marco_pin&limit=1");
+    const liveSettings = rows?.[0];
+    const field      = uN === "Daniel Duran" ? "daniel_pin" : "marco_pin";
+    const livePin    = liveSettings?.[field];
+
+    if (!livePin || cpCurrent !== livePin) {
+      setCpError("Current PIN is incorrect.");
+      setCpCurrent("");
+      setCpSaving(false);
+      return;
+    }
+
+    await db.patch("admin_settings", "id=gt.0", { [field]: cpNew });
+    if (field === "daniel_pin") setDanielPin(cpNew); else setMarcoPin(cpNew);
     setCpSaving(false);
     setChangePinModal(false);
     fire("PIN updated successfully!");
