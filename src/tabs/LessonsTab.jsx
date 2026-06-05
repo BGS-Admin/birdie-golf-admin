@@ -191,9 +191,21 @@ export default function LessonsTab({ customers }) {
         ].filter(Boolean))];
 
         // Build full timeline — packages + lessons sorted by date desc
+        // Enrich credit lessons with the package they came from (match by coach + date window)
+        const enrichedLessons = d.lessons.map(l => {
+          if (!l.credits_used || l.credits_used === 0) return { ...l, _type: "lesson", _date: l.date || "" };
+          // Find the package for this coach that was active on this lesson date
+          const matchPkg = d.packages.find(p =>
+            p.coach_id === (l.coach_name?.includes("Espinoza") ? "SE" : "NC") &&
+            (!p.purchase_date || p.purchase_date <= l.date) &&
+            (!p.expiry_date   || p.expiry_date   >= l.date)
+          ) || d.packages.find(p => p.coach_name === l.coach_name); // fallback: same coach any package
+          return { ...l, _type: "lesson", _date: l.date || "", _pkg: matchPkg || null };
+        });
+
         const timeline = [
           ...d.packages.map(p => ({ ...p, _type: "package", _date: p.purchase_date || "" })),
-          ...d.lessons.map(l => ({ ...l, _type: "lesson",  _date: l.date || "" })),
+          ...enrichedLessons,
         ].sort((a, b) => b._date.localeCompare(a._date));
 
         return (
@@ -291,7 +303,11 @@ export default function LessonsTab({ customers }) {
                             </div>
                             <p style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
                               {fmtDate(item.date)}{item.start_time ? " · " + item.start_time : ""} · Bay {item.bay || "—"}
-                              {isCredit && <span style={{ marginLeft: 6, color: PURPLE, fontWeight: 600 }}>via package</span>}
+                              {isCredit && (
+                              <span style={{ marginLeft: 6, color: PURPLE, fontWeight: 600 }}>
+                                via {item._pkg ? (item._pkg.name || item._pkg.total_credits + "-Hr Package") : "package"}
+                              </span>
+                            )}
                             </p>
                           </div>
                         </div>
