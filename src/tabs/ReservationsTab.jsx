@@ -199,32 +199,51 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const creditInfo = custObj ? getCreditInfo(custObj, durSlots) : null;
     const creditsUsed = creditInfo ? creditInfo.used : 0;
 
-    // Calculate charge amount (subtotal pre-tax; Square applies 7% via catalog)
-    const TAX_RATE = 0.07;
-    const hrs     = durSlots * 0.5;
-    const d       = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-    const isWk    = d.getDay() === 0 || d.getDay() === 6;
-    const hour    = toH(selB.time || "9:00 AM");
-    const isPeak  = !isWk && hour >= 17;
-    const rate    = isPeak ? cfg.pk : cfg.op;
-    const paidHrs = creditInfo ? creditInfo.remain : hrs;
-    const subtotal = selB.cardId && selB.cardId !== "in_person" ? Math.round(paidHrs * rate * 100) / 100 : 0;
-    const taxAmt   = Math.round(subtotal * TAX_RATE * 100) / 100;
-    const amount   = Math.round((subtotal + taxAmt) * 100) / 100;
+    // Calculate charge amount
+    const TAX_RATE  = 0.07;
+    const isLesson2 = selB.type === "lesson";
+    const hrs       = durSlots * 0.5;
+    const d         = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+    const isWk      = d.getDay() === 0 || d.getDay() === 6;
+    const hour      = toH(selB.time || "9:00 AM");
+    const isPeak    = !isWk && hour >= 17;
+    const rate      = isPeak ? cfg.pk : cfg.op;
+    const paidHrs   = creditInfo ? creditInfo.remain : hrs;
+    // Lessons: not taxable. Bays: Square applies 7% via catalog.
+    const subtotal  = selB.cardId && selB.cardId !== "in_person" ? Math.round(paidHrs * rate * 100) / 100 : 0;
+    const taxAmt    = isLesson2 ? 0 : Math.round(subtotal * TAX_RATE * 100) / 100;
+    const amount    = Math.round((subtotal + taxAmt) * 100) / 100;
 
-    // Charge via bay.charge (uses Square catalog — tax applied automatically by Square)
+    // Charge via Square catalog (bay.charge or lesson.purchase)
     let sqPaymentId = null;
+    const isLesson = selB.type === "lesson";
+
     if (subtotal > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
       const sqCard = custCards.find(c => c.id === selB.cardId);
       if (sqCard?.square_card_id) {
-        const chargeRes = await sq("bay.charge", {
-          square_customer_id: custObj.square_customer_id,
-          card_id: sqCard.square_card_id,
-          slots: durSlots,
-          is_peak: isPeak,
-          note: `Bay ${selB.bay} · ${selB.date || dateKey(resDate)} · ${paidHrs}hr`,
-        });
-        sqPaymentId = chargeRes?.payment?.id || null;
+        if (isLesson) {
+          // lesson.purchase — uses catalog item per coach + member status, no tax
+          const isMember = !!(custObj?.tier && custObj.tier !== "none");
+          const coachId  = selB.coach_id || (selB.coach_name?.includes("Espinoza") ? "SE" : "NC");
+          const chargeRes = await sq("lesson.purchase", {
+            square_customer_id: custObj.square_customer_id,
+            card_id: sqCard.square_card_id,
+            coach_id: coachId,
+            hours: 1,
+            is_member: isMember,
+          });
+          sqPaymentId = chargeRes?.payment?.id || null;
+        } else {
+          // bay.charge — uses catalog + applies 7% tax via Square
+          const chargeRes = await sq("bay.charge", {
+            square_customer_id: custObj.square_customer_id,
+            card_id: sqCard.square_card_id,
+            slots: durSlots,
+            is_peak: isPeak,
+            note: `Bay ${selB.bay} · ${selB.date || dateKey(resDate)} · ${paidHrs}hr`,
+          });
+          sqPaymentId = chargeRes?.payment?.id || null;
+        }
       }
     }
 
@@ -285,7 +304,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         total:          "$" + amount.toFixed(2),
         credits_used:   creditsUsed > 0 ? creditsUsed + " hr credit" + (creditsUsed > 1 ? "s" : "") : null,
         type:           selB.type === "lesson" ? "lesson_booking" : "bay_booking",
-        coach:          selB.type === "lesson" ? (selB.coach_name || "") : undefined,
+        coach:          selB.coach_name || undefined,
         payment_method: selB.cardId === "in_person" ? "In Person" : "Card on file",
         send_admin:     true,
       };
@@ -825,18 +844,40 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
 
                 {/* Amount preview */}
                 {selB.cardId && selB.cardId !== "in_person" && (() => {
-                  const TAX_RATE = 0.07;
-                  const durSlots = DUR_MAP[selB.dur] || 2;
-                  const hrs = durSlots * 0.5;
-                  const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-                  const isWk = d.getDay() === 0 || d.getDay() === 6;
-                  const hour  = toH(selB.time || "9:00 AM");
-                  const isPeak = !isWk && hour >= 17;
-                  const rate  = isPeak ? cfg.pk : cfg.op;
-                  const paidHrs = creditInfo ? creditInfo.remain : hrs;
-                  const subtotal = Math.round(paidHrs * rate * 100) / 100;
-                  const taxAmt   = Math.round(subtotal * TAX_RATE * 100) / 100;
-                  const total    = Math.round((subtotal + taxAmt) * 100) / 100;
+                  const TAX_RATE  = 0.07;
+                  const isLes     = (selB.type || "bay") === "lesson";
+
+                  if (isLes) {
+                    // Lesson pricing: $120 member, $150 non-member (not taxable)
+                    const isMem    = !!(selB.custObj?.tier && selB.custObj.tier !== "none");
+                    const lesPrice = isMem ? 120 : 150;
+                    return (
+                      <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                          <span style={{ fontSize: 12, color: "#888" }}>1hr Lesson · {isMem ? "Member rate" : "Non-member rate"}</span>
+                          <span style={{ fontSize: 12, color: "#888" }}>${lesPrice}.00</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
+                          <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${lesPrice}.00</span>
+                        </div>
+                        <p style={{ fontSize: 11, color: "#aaa" }}>Lessons are not subject to sales tax.</p>
+                      </div>
+                    );
+                  }
+
+                  // Bay pricing
+                  const durSlots  = DUR_MAP[selB.dur] || 2;
+                  const hrs       = durSlots * 0.5;
+                  const d         = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+                  const isWk      = d.getDay() === 0 || d.getDay() === 6;
+                  const hour      = toH(selB.time || "9:00 AM");
+                  const isPeak    = !isWk && hour >= 17;
+                  const rate      = isPeak ? cfg.pk : cfg.op;
+                  const paidHrs   = creditInfo ? creditInfo.remain : hrs;
+                  const subtotal  = Math.round(paidHrs * rate * 100) / 100;
+                  const taxAmt    = Math.round(subtotal * TAX_RATE * 100) / 100;
+                  const total     = Math.round((subtotal + taxAmt) * 100) / 100;
                   return (
                     <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
                       <div style={{ display: "flex", justifyContent: "space-between" }}>
