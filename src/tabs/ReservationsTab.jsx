@@ -192,14 +192,16 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         custId  = newCust.id;
         custObj = newCust;
         // Create in Square too
-        const sqResult = await sq("customer.create", {
-          first_name: info.firstName,
-          last_name:  info.lastName || "",
-          phone,
-          email:      info.email || "",
-          supabase_id: custId,
-        });
-        const sqId = sqResult?.customer?.id;
+        // Search Square first, create only if not found
+        const sqSearch = await sq("customer.search", { phone, email: info.email || "" });
+        let sqId = sqSearch?.customers?.[0]?.id;
+        if (!sqId) {
+          const sqResult = await sq("customer.create", {
+            first_name: info.firstName, last_name: info.lastName || "",
+            phone, email: info.email || "", supabase_id: custId,
+          });
+          sqId = sqResult?.customer?.id;
+        }
         if (sqId) {
           await db.patch("customers", `id=eq.${custId}`, { square_customer_id: sqId });
           custObj = { ...custObj, square_customer_id: sqId };
@@ -551,15 +553,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
+                        style={{ ...GS.booking, background: color, borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
-                        <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
+                        <p style={{ fontSize: 10, fontWeight: 700, color: "#fff", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
                         <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 1 }}>
-                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: TC[cust.tier], padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
-                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
-                          <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
-                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: "rgba(255,255,255,0.25)", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
+                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: "rgba(255,255,255,0.25)", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
+                          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.8)" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
+                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: "rgba(255,255,255,0.25)", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
                         </div>
                       </div>
                     </div>

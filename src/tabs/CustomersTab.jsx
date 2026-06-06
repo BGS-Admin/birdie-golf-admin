@@ -14,6 +14,13 @@ const sq = async (action, params = {}) => {
 };
 
 const fmt$ = n => "$" + Number(n || 0).toFixed(2);
+const fmtPhone = (p) => {
+  if (!p) return "";
+  const d = String(p).replace(/\D/g, "");
+  if (d.length === 10) return `+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  if (d.length === 11) return `+${d[0]} (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+  return p;
+};
 const fmtDate = d => d ? new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
 const fmtDateTime = iso => {
   if (!iso) return "—";
@@ -77,6 +84,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     setSaveError("");
     const phone = form.phone.replace(/\D/g, "");
     if (!form.firstName.trim()) { setSaveError("First name is required."); return; }
+    if (!form.lastName.trim())  { setSaveError("Last name is required."); return; }
     if (phone.length < 10) { setSaveError("Please enter a valid 10-digit phone number."); return; }
     const existing = await db.get("customers", `phone=eq.${phone}&select=id`);
     if (existing?.length) { setSaveError("A customer with this phone number already exists."); return; }
@@ -87,8 +95,15 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     });
     const newCust = Array.isArray(rows) ? rows[0] : rows;
     if (!newCust?.id) { setSaveError("Failed to create customer."); setSaving(false); return; }
-    sq("customer.create", { first_name: form.firstName.trim(), last_name: form.lastName.trim(), phone, email: form.email.trim(), supabase_id: newCust.id })
-      .then(async r => { const sqId = r?.customer?.id; if (sqId) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: sqId }); });
+    // Search Square first, create only if not found (mirrors booking app)
+    const searchRes = await sq("customer.search", { phone, email: form.email.trim() });
+    const sqId = searchRes?.customers?.[0]?.id;
+    if (sqId) {
+      await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: sqId });
+    } else {
+      sq("customer.create", { first_name: form.firstName.trim(), last_name: form.lastName.trim(), phone, email: form.email.trim(), supabase_id: newCust.id })
+        .then(async r => { const id = r?.customer?.id; if (id) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: id }); });
+    }
     await logActivity?.(`Added customer: ${form.firstName.trim()} ${form.lastName.trim()}`);
     setSaving(false); setAddModal(false); onRefresh();
   };
@@ -298,7 +313,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
             <div style={{ flex: 1 }}>
               <p style={{ fontSize: 14, fontWeight: 600 }}>{cn(c)}</p>
               <p style={{ fontSize: 11, color: "#888" }}>
-                {c.phone || ""}{c.email ? " · " + c.email : ""}
+                {fmtPhone(c.phone)}{c.email ? " · " + c.email : ""}
               </p>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -333,7 +348,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
                   </span>
                 </div>
                 <p style={{ fontSize: 12, color: "#888" }}>
-                  {detailCust.phone || ""}
+                  {fmtPhone(detailCust.phone)}
                   {detailCust.email ? " · " + detailCust.email : ""}
                 </p>
                 {detailCust.bay_credits_remaining > 0 && (
@@ -379,7 +394,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
                   onChange={e => setForm(p => ({ ...p, firstName: e.target.value }))} />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={GS.label}>LAST NAME</label>
+                <label style={GS.label}>LAST NAME *</label>
                 <input style={GS.input} placeholder="Last" value={form.lastName}
                   onChange={e => setForm(p => ({ ...p, lastName: e.target.value }))} />
               </div>
@@ -401,8 +416,8 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
             )}
             <div style={{ display: "flex", gap: 10 }}>
               <button style={{ ...GS.togBtn, flex: 1, padding: "12px 16px" }} onClick={() => setAddModal(false)}>Cancel</button>
-              <button style={{ ...S.b1, flex: 2, opacity: (form.firstName && form.phone.replace(/\D/g, "").length >= 10) ? 1 : 0.4 }}
-                disabled={saving || !form.firstName || form.phone.replace(/\D/g, "").length < 10} onClick={saveCustomer}>
+              <button style={{ ...S.b1, flex: 2, opacity: (form.firstName && form.lastName && form.phone.replace(/\D/g, "").length >= 10) ? 1 : 0.4 }}
+                disabled={saving || !form.firstName || !form.lastName || form.phone.replace(/\D/g, "").length < 10} onClick={saveCustomer}>
                 {saving ? "Saving..." : "Add Customer"}
               </button>
             </div>

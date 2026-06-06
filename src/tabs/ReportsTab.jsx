@@ -74,12 +74,18 @@ export default function ReportsTab({ bookings, customers }) {
   const [loadingT,       setLoadingT]       = useState(true);
   const [showAllClients, setShowAllClients] = useState(false);
 
-  /* fetch transactions once */
+  const [lessonPkgs, setLessonPkgs] = useState([]);
+
+  /* fetch transactions + lesson packages once */
   useEffect(() => {
     (async () => {
       setLoadingT(true);
-      const t = await db.get("transactions", "select=*&order=date.desc&limit=2000");
+      const [t, pkgs] = await Promise.all([
+        db.get("transactions", "select=*&order=date.desc&limit=2000"),
+        db.get("lesson_packages", "select=*&order=purchase_date.desc"),
+      ]);
       setTxns(t || []);
+      setLessonPkgs(pkgs || []);
       setLoadingT(false);
     })();
   }, []);
@@ -217,6 +223,34 @@ export default function ReportsTab({ bookings, customers }) {
       .filter(r => r.total > 0)
       .sort((a, b2) => b2.total - a.total);
   }, [confirmedBk, filteredTxns, customers]);
+
+  /* ══════════════════ LESSONS ══════════════════ */
+  // Per-coach lesson stats
+  const coachLessonStats = (() => {
+    const coaches = ["Santiago Espinoza", "Nicolas Cavero"];
+    return coaches.map(coach => {
+      const coachPkgs    = lessonPkgs.filter(p => p.coach_name === coach);
+      const pkgs3hr      = coachPkgs.filter(p => p.total_credits === 3);
+      const pkgs5hr      = coachPkgs.filter(p => p.total_credits === 5);
+      const activeP      = coachPkgs.filter(p => p.status === "active" && p.remaining_credits > 0);
+      const exhaustedP   = coachPkgs.filter(p => p.status === "exhausted" || p.remaining_credits === 0);
+      const expiredP     = coachPkgs.filter(p => p.expiry_date && new Date(p.expiry_date + "T23:59:59") < new Date() && p.remaining_credits > 0);
+      const totalCredits = coachPkgs.reduce((s, p) => s + (p.total_credits || 0), 0);
+      const usedCredits  = coachPkgs.reduce((s, p) => s + ((p.total_credits||0) - (p.remaining_credits||0)), 0);
+      const remainCredits= coachPkgs.reduce((s, p) => s + (p.remaining_credits || 0), 0);
+      const singleLessons= filteredBk.filter(b => b.type === "lesson" && b.coach_name === coach && (!b.credits_used || b.credits_used === 0));
+      const pkgLessons   = filteredBk.filter(b => b.type === "lesson" && b.coach_name === coach && b.credits_used > 0);
+      const pkgRevenue   = coachPkgs.filter(p => { const d = p.purchase_date ? new Date(p.purchase_date + "T12:00:00") : null; return d && d >= range.from && d <= range.to; }).reduce((s, p) => s + Number(p.price||0), 0);
+      const singleRevenue= singleLessons.reduce((s, b) => s + Number(b.amount||0), 0);
+      return { coach, pkgs3hr: pkgs3hr.length, pkgs5hr: pkgs5hr.length, totalPkgs: coachPkgs.length, activeP: activeP.length, exhaustedP: exhaustedP.length, expiredP: expiredP.length, totalCredits, usedCredits, remainCredits, singleLessons: singleLessons.length, pkgLessons: pkgLessons.length, pkgRevenue, singleRevenue };
+    });
+  })();
+
+  const totalLessonRevenue = coachLessonStats.reduce((s, c) => s + c.pkgRevenue + c.singleRevenue, 0);
+  const totalActivePkgs    = coachLessonStats.reduce((s, c) => s + c.activeP, 0);
+  const totalExpiredPkgs   = coachLessonStats.reduce((s, c) => s + c.expiredP, 0);
+  const totalCreditsUsed   = coachLessonStats.reduce((s, c) => s + c.usedCredits, 0);
+  const totalCreditsLeft   = coachLessonStats.reduce((s, c) => s + c.remainCredits, 0);
 
   /* ══════════════════ CUSTOMERS & MEMBERS ══════════════════ */
   const activeMembers = customers.filter(c => c.tier && c.tier !== "none");
@@ -652,6 +686,50 @@ export default function ReportsTab({ bookings, customers }) {
           </div>
         )
       }
+
+      {/* ── LESSONS ── */}
+      <SectionTitle>Lessons</SectionTitle>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
+        <KPI label="LESSON REVENUE"     value={fmt$(totalLessonRevenue)} color={PURPLE} />
+        <KPI label="ACTIVE PACKAGES"    value={totalActivePkgs} sub="Credits not yet used" color={GREEN} />
+        <KPI label="EXPIRED PACKAGES"   value={totalExpiredPkgs} sub="Credits left unused" color={totalExpiredPkgs > 0 ? RED : "#888"} />
+        <KPI label="CREDITS REMAINING"  value={totalCreditsLeft} sub={`of ${totalCreditsUsed + totalCreditsLeft} total issued`} />
+      </div>
+
+      {coachLessonStats.map(c => (
+        <div key={c.coach} style={{ background: "#fff", border: "1px solid #e8e8e6", borderRadius: 14, padding: 16, marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 9, background: PURPLE, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, color: "#fff", fontFamily: mono }}>
+                {c.coach.split(" ").map(w => w[0]).join("")}
+              </div>
+              <div>
+                <p style={{ fontSize: 15, fontWeight: 700 }}>{c.coach}</p>
+                <p style={{ fontSize: 11, color: "#888" }}>{c.totalPkgs} packages · {c.singleLessons} single lessons</p>
+              </div>
+            </div>
+            <p style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: PURPLE }}>{fmt$(c.pkgRevenue + c.singleRevenue)}</p>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 12 }}>
+            {[
+              { l: "3-Hr Packages",    v: c.pkgs3hr },
+              { l: "5-Hr Packages",    v: c.pkgs5hr },
+              { l: "Single Lessons",   v: c.singleLessons },
+              { l: "Active Packages",  v: c.activeP,    color: GREEN },
+              { l: "Fully Used",       v: c.exhaustedP, color: "#888" },
+              { l: "Expired w/ Credits", v: c.expiredP, color: c.expiredP > 0 ? RED : "#aaa" },
+            ].map(s => (
+              <div key={s.l} style={{ background: "#fafaf8", borderRadius: 8, padding: "10px 12px", textAlign: "center" }}>
+                <p style={{ fontSize: 10, color: "#888", fontWeight: 700, letterSpacing: 0.5, marginBottom: 4 }}>{s.l.toUpperCase()}</p>
+                <p style={{ fontSize: 20, fontWeight: 700, fontFamily: mono, color: s.color || "#1a1a1a" }}>{s.v}</p>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Credit utilization</p>
+          <Bar pct={c.totalCredits > 0 ? (c.usedCredits / c.totalCredits) * 100 : 0} color={PURPLE} height={8} />
+          <p style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>{c.usedCredits} of {c.totalCredits} credits used · {c.remainCredits} remaining</p>
+        </div>
+      ))}
 
       {/* At-risk members */}}
       {atRisk.length > 0 && (

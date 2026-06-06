@@ -95,13 +95,26 @@ export default function AdminApp() {
     setTimeout(() => setToast(null), 3200);
   }, []);
 
-  /* ── Front Desk auto-lock (2hrs) ── */
+  /* ── Front Desk auto-lock (5 min) ── */
+  const FD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
   const startLockTimer = useCallback(() => {
     if (lockTimer.current) clearTimeout(lockTimer.current);
     lockTimer.current = setTimeout(() => {
       setLogged(false); setView("res"); setUN(""); setUserRole("");
-    }, FD_LOCK_MINUTES * 60 * 1000);
+    }, FD_TIMEOUT_MS);
   }, []);
+
+  // Reset timer on any user activity (front desk only)
+  useEffect(() => {
+    if (!logged || userRole !== "front_desk") return;
+    const reset = () => startLockTimer();
+    ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach(e => window.addEventListener(e, reset));
+    startLockTimer(); // start immediately on login
+    return () => {
+      ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach(e => window.removeEventListener(e, reset));
+      if (lockTimer.current) clearTimeout(lockTimer.current);
+    };
+  }, [logged, userRole, startLockTimer]);
 
   /* ── Data loader ── */
   const load = useCallback(async () => {

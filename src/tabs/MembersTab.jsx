@@ -278,7 +278,7 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
             <button
               key={t.id}
               style={{ flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: active ? t.c : "transparent", color: active ? "#fff" : "#888", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, textAlign: "center" }}
-              onClick={() => { setShowFormer(false); setMemTier(t.id); }}
+              onClick={() => { setShowFormer(null); setMemTier(t.id); }}
             >
               <span style={{ display: "block" }}>{t.badge}</span>
               <span style={{ display: "block", fontSize: 10, fontWeight: 400, marginTop: 2 }}>{count}</span>
@@ -286,16 +286,16 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
           );
         })}
         <button
-          style={{ flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: showFormer ? "#555" : "transparent", color: showFormer ? "#fff" : "#888", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, textAlign: "center" }}
-          onClick={() => { setShowFormer(true); loadFormerMembers(); }}
+          style={{ flex: 1, padding: "10px 8px", borderRadius: 10, border: "none", background: showFormer === "all" ? "#555" : "transparent", color: showFormer === "all" ? "#fff" : "#888", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, textAlign: "center" }}
+          onClick={() => { setShowFormer("all"); loadFormerMembers(); }}
         >
           <span style={{ display: "block" }}>FMRS</span>
-          <span style={{ display: "block", fontSize: 10, fontWeight: 400, marginTop: 2 }}>Former</span>
+          <span style={{ display: "block", fontSize: 10, fontWeight: 400, marginTop: 2 }}>All Former</span>
         </button>
       </div>
 
       {/* ── Former Members View ── */}
-      {showFormer && (
+      {(showFormer === "all") && (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
             <p style={{ fontSize: 13, color: "#888" }}>Customers who had a membership and cancelled</p>
@@ -354,10 +354,10 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
             </div>
             <div style={{ flex: 1 }}>
               <p style={{ fontSize: 14, fontWeight: 600 }}>{cn(c)}</p>
-              <p style={{ fontSize: 11, color: "#888" }}>{c.phone || ""}</p>
+              <p style={{ fontSize: 11, color: "#888" }}>{c.phone ? ((() => { const d = c.phone.replace(/\D/g,""); return d.length===10?`+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:d.length===11?`+${d[0]} (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`:c.phone; })()) : ""}</p>
               {c.member_since  && <p style={{ fontSize: 10, color: "#aaa" }}>Since {c.member_since}</p>}
               {c.cancellation_scheduled
-                ? <p style={{ fontSize: 10, color: "#E8890C", fontWeight: 600 }}>Ends {c.credits_valid_until || c.renewal_date}</p>
+                ? <p style={{ fontSize: 10, color: "#E8890C", fontWeight: 600 }}>⚠ Cancelled · Access until {c.credits_valid_until || c.renewal_date}</p>
                 : c.renewal_date && <p style={{ fontSize: 10, color: "#aaa" }}>Renews {c.renewal_date}</p>}
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
@@ -411,6 +411,51 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
           </div>
         ))
       ) : null}
+
+      {/* ── Former members for current tier ── */}
+      {!showFormer && activeTier && (() => {
+        const formerForTier = formerList.filter(h => h.tier === memTier);
+        const [showTierFormer, setShowTierFormer] = React.useState(false);
+        return (
+          <>
+            <button
+              style={{ width: "100%", padding: "10px 14px", background: "#f8f8f6", border: "1px solid #e8e8e6", borderRadius: 10, fontSize: 12, fontWeight: 600, color: "#888", cursor: "pointer", fontFamily: ff, textAlign: "left", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+              onClick={() => { setShowTierFormer(p => !p); if (!showTierFormer) loadFormerMembers(); }}
+            >
+              <span>Former {activeTier.n} members</span>
+              <span style={{ fontSize: 11 }}>{showTierFormer ? "▲" : "▼"}</span>
+            </button>
+            {showTierFormer && (
+              <div style={{ marginTop: 6 }}>
+                {formerLoad ? (
+                  <p style={{ fontSize: 13, color: "#aaa", padding: "10px 0" }}>Loading...</p>
+                ) : formerForTier.length === 0 ? (
+                  <div style={{ padding: "12px 0", textAlign: "center", color: "#aaa", fontSize: 13 }}>No former {activeTier.n} members</div>
+                ) : formerForTier.map((h, i) => {
+                  const cust = customers.find(c => c.id === h.customer_id);
+                  const cancelDate = h.created_at ? new Date(h.created_at) : null;
+                  const lastMonth = cancelDate ? cancelDate.toLocaleDateString("en-US", { month: "long", year: "numeric" }) : "Unknown";
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", background: "#fff", border: "1px solid #e8e8e6", borderRadius: 10, marginBottom: 4 }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 9, background: "#f0f0ee", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12, fontFamily: mono, color: "#888", flexShrink: 0 }}>
+                        {cust ? (cust.first_name?.[0]||"") + (cust.last_name?.[0]||"") : "?"}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontSize: 14, fontWeight: 600 }}>{cust ? cn(cust) : "Unknown"}</p>
+                        <p style={{ fontSize: 11, color: "#888" }}>{cust?.phone ? ((() => { const d = (cust.phone||"").replace(/\D/g,""); return d.length===10?`+1 (${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`:cust.phone; })()) : ""}</p>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: "#888", display: "block" }}>Last month</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#555" }}>{lastMonth}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Perks */}
       {!showFormer && activeTier && (
