@@ -4,44 +4,66 @@ const SQUARE_ACCESS_TOKEN = Deno.env.get("SQUARE_ACCESS_TOKEN") || "EAAAly4dd_by
 const SQUARE_BASE_URL = "https://connect.squareup.com/v2";
 const LOCATION_ID = "LTNVZZ9PJH2K8";
 
-/* ─── Square Catalog Variation IDs ─── */
-const CATALOG = {
-  // Bay slots (per 30-min slot)
-  bay: {
-    nonPeak: "EDVT5IBHJJ6B7XQUY2ECF7NM",  // Non-peak Half-hour $25
-    peak:    "FUUG7JBFZUCEPULZLX36AE55",   // Peak Half-hour $37.50
+/* ─── Square Catalog SKUs ─── */
+// Bay slots (per 30-min slot) — SKU-based, looked up at runtime
+const BAY_SKUS: Record<string, string> = {
+  public_nonpeak:       "T333487",   // Public 30 Min Non-Peak
+  public_peak:          "2944237",   // Public 30 Min Peak
+  starter_nonpeak:      "4388872",   // Starter 30 Min Non-Peak
+  starter_peak:         "153380L",   // Starter 30 Min Peak
+  early_birdie_nonpeak: "4113992",   // Early Birdie 30 Min Non-Peak
+  player_nonpeak:       "Z471393",   // Player's 30 Min Non-Peak
+  player_peak:          "572805F",   // Player's 30 Min Peak
+  champion_nonpeak:     "413004N",   // Champion's 30 Min Non-Peak
+  champion_peak:        "7931551",   // Champion's 30 Min Peak
+};
+
+// Membership signup SKUs (enrollment fee handled by Square modifier)
+const MEMBERSHIP_SKUS: Record<string, string> = {
+  starter:      "D661411",   // Starter Membership
+  early_birdie: "F204781",   // Early Birdie Membership
+  player:       "3280496",   // Player's Membership
+  champion:     "W475281",   // Champion's Membership
+};
+
+// Membership renewal SKUs — no enrollment fee modifier
+const MEMBERSHIP_RENEWAL_SKUS: Record<string, string> = {
+  starter:      "D661411",   // Starter Membership (same — no enrollment fee)
+  early_birdie: "287209H",   // Early Birdie Membership Renewal
+  player:       "170432G",   // Player's Membership Renewal
+  champion:     "W475281",   // Champion's Membership (same — no enrollment fee)
+};
+
+// Lesson package SKUs — keyed by coach ID then package
+const LESSON_SKUS: Record<string, Record<string, string>> = {
+  NC: {
+    "1hr_member":    "812106T",  // 1-hr member lesson · Nicolas Cavero
+    "1hr_nonmember": "3399123",  // 1-hr non-member lesson · Nicolas Cavero
+    "3hr_member":    "201558A",  // 3-hr member package · Nicolas Cavero
+    "3hr_nonmember": "6136622",  // 3-hr non-member package · Nicolas Cavero
+    "5hr_member":    "X377645",  // 5-hr member package · Nicolas Cavero
+    "5hr_nonmember": "5205473",  // 5-hr non-member package · Nicolas Cavero
   },
-  // Memberships (monthly)
-  membership: {
-    starter:      "S3O74BIJLUXHBVZ5KK55N7LD",  // $45
-    early_birdie: "WSOA4KUS4BT3ZU4WPT4RIEXB",  // $150
-    player:       "CX35SSOYUZ4TCAOR6MG66DWA",  // $200
-    champion:     "BADPKEGH2HZMRTGS6UI6VELN",  // $600
+  SE: {
+    "1hr_member":    "Y241741",  // 1-hr member lesson · Santiago Espinoza
+    "1hr_nonmember": "P352820",  // 1-hr non-member lesson · Santiago Espinoza
+    "3hr_member":    "279777C",  // 3-hr member package · Santiago Espinoza
+    "3hr_nonmember": "324856H",  // 3-hr non-member package · Santiago Espinoza
+    "5hr_member":    "A232624",  // 5-hr member package · Santiago Espinoza
+    "5hr_nonmember": "R135065",  // 5-hr non-member package · Santiago Espinoza
   },
-  // Enrollment fees (one-time)
-  enrollment: {
-    early_birdie: "QHH3LVRHX2A6FOMDD7YI3TZQ",  // $50
-    player:       "KRJBNUXESFHFAVLGHFQQIHOJ",   // $75
-  },
-  // Lesson packages — keyed by coach ID then package
-  lessons: {
-    NC: {
-      "1hr_member":     "UKEHH3QVUTCYFGYCDUQ6CKUO",
-      "1hr_nonmember":  "GGVR2EPWJO7X6EXIA3UOZAW2",
-      "3hr_member":     "XRPRXOVQMGEGHHBJHGOHHRAP",
-      "3hr_nonmember":  "VZJ4WPN5SYIXHKG6JIHBTCXX",
-      "5hr_member":     "62HIMMGI7EHFMX7YL5CRJISI",
-      "5hr_nonmember":  "F5NKXSWKTRDH6AO2UODXK63F",
-    },
-    SE: {
-      "1hr_member":     "GZ7JVZFCC2KELEIUNYWSJCQC",
-      "1hr_nonmember":  "QYS6HWFENDYVIKY43VHRMGA2",
-      "3hr_member":     "4EHBCEAX2WBYKMHRIT275JO3",
-      "3hr_nonmember":  "MRS45AHNJGHNYYJD4MNBWVRY",
-      "5hr_member":     "523LP6SABJ2D563UORGTLJDU",
-      "5hr_nonmember":  "FDZP3N5RY7FJJFDQBVCGDRNA",
-    },
-  },
+};
+
+/* ─── SKU → Variation ID lookup ─── */
+const skuToVariationId = async (sku: string): Promise<string | null> => {
+  const res = await squareRequest("/catalog/search", "POST", {
+    object_types: ["ITEM_VARIATION"],
+    query: { text_query: { keywords: [sku] } },
+  });
+  const match = (res?.objects || []).find(
+    (o: any) => o.type === "ITEM_VARIATION" && o.item_variation_data?.sku === sku
+  );
+  return match?.id || null;
 };
 
 
@@ -614,20 +636,23 @@ async function processRenewals(): Promise<{ processed: number; errors: string[] 
       }
 
       // Create order with catalog item then pay — properly linked in Square Dashboard
-      const membershipVariationId = CATALOG.membership[effectiveTier as keyof typeof CATALOG.membership];
-      if (!membershipVariationId) {
-        errors.push(`No catalog item for tier ${effectiveTier} — customer ${id}`);
+      const renewMemSku = MEMBERSHIP_RENEWAL_SKUS[effectiveTier];
+      if (!renewMemSku) {
+        errors.push(`No renewal SKU for tier ${effectiveTier} — customer ${id}`);
         continue;
       }
-      const renewalTaxes = await getCatalogTaxes(membershipVariationId);
+      const membershipVariationId = await skuToVariationId(renewMemSku);
+      if (!membershipVariationId) {
+        errors.push(`SKU lookup failed for tier ${effectiveTier} — customer ${id}`);
+        continue;
+      }
       const orderRes = await squareRequest("/orders", "POST", {
         idempotency_key: crypto.randomUUID(),
         order: {
           location_id: LOCATION_ID,
           customer_id: square_customer_id,
-          reference_id: "BGS App",
+          reference_id: "BGS Admin App",
           line_items: [{ quantity: "1", catalog_object_id: membershipVariationId, item_type: "ITEM" }],
-          ...(renewalTaxes.length > 0 ? { taxes: renewalTaxes } : {}),
         },
       });
       const orderId = orderRes?.order?.id;
@@ -643,7 +668,7 @@ async function processRenewals(): Promise<{ processed: number; errors: string[] 
         customer_id: square_customer_id,
         location_id: LOCATION_ID,
         order_id: orderId,
-        reference_id: "BGS App",
+        reference_id: "BGS Admin App",
         note: `${effectiveTier} membership renewal — ${today}`,
         autocomplete: true,
       });
@@ -749,18 +774,6 @@ async function processRenewals(): Promise<{ processed: number; errors: string[] 
 }
 
 
-// Helper: look up catalog-configured taxes for a variation ID
-async function getCatalogTaxes(variationId: string): Promise<any[]> {
-  try {
-    const varRes = await squareRequest(`/catalog/object/${variationId}`, "GET");
-    const parentItemId = varRes?.object?.item_variation_data?.item_id;
-    if (!parentItemId) return [];
-    const itemRes = await squareRequest(`/catalog/object/${parentItemId}`, "GET");
-    const taxIds: string[] = itemRes?.object?.item_data?.tax_ids || [];
-    return taxIds.map((id: string) => ({ catalog_object_id: id, scope: "ORDER" }));
-  } catch { return []; }
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -802,14 +815,9 @@ serve(async (req) => {
           order: {
             location_id: LOCATION_ID,
             customer_id: params.square_customer_id || undefined,
-            reference_id: "BGS App",
+            reference_id: "BGS Admin App",
             line_items: lineItems,
-            taxes: params.apply_tax !== false ? [{
-              uid: "bgs-tax",
-              name: "Sales Tax",
-              percentage: "7",
-              scope: "ORDER",
-            }] : [],
+            // Taxes applied by Square at catalog level
           },
         };
         result = await squareRequest("/orders", "POST", orderBody);
@@ -818,18 +826,26 @@ serve(async (req) => {
 
       case "bay.charge": {
         // Create order with catalog bay slot items + pay with card on file
+        // Route to the correct SKU based on membership tier and peak/non-peak
         const isPeak = params.is_peak === true;
         const slots = params.slots || 1; // number of 30-min slots
-        const variationId = isPeak ? CATALOG.bay.peak : CATALOG.bay.nonPeak;
-        const bayTaxes = await getCatalogTaxes(variationId);
+        const tier = (params.tier || "public") as string;
+        let baySkuKey: string;
+        if (tier === "starter")       baySkuKey = isPeak ? "starter_peak"       : "starter_nonpeak";
+        else if (tier === "early_birdie") baySkuKey = "early_birdie_nonpeak"; // EB only has non-peak
+        else if (tier === "player")   baySkuKey = isPeak ? "player_peak"        : "player_nonpeak";
+        else if (tier === "champion") baySkuKey = isPeak ? "champion_peak"      : "champion_nonpeak";
+        else                          baySkuKey = isPeak ? "public_peak"        : "public_nonpeak";
+        const baySku = BAY_SKUS[baySkuKey];
+        const variationId = await skuToVariationId(baySku);
+        if (!variationId) { result = { error: `SKU lookup failed for: ${baySku}` }; break; }
         const orderRes = await squareRequest("/orders", "POST", {
           idempotency_key: crypto.randomUUID(),
           order: {
             location_id: LOCATION_ID,
             customer_id: params.square_customer_id,
-            reference_id: "BGS App",
+            reference_id: "BGS Admin App",
             line_items: [{ quantity: String(slots), catalog_object_id: variationId, item_type: "ITEM" }],
-            ...(bayTaxes.length > 0 ? { taxes: bayTaxes } : {}),
           },
         });
         const orderId = orderRes?.order?.id;
@@ -842,7 +858,7 @@ serve(async (req) => {
           customer_id: params.square_customer_id,
           location_id: LOCATION_ID,
           order_id: orderId,
-          reference_id: "BGS App",
+          reference_id: "BGS Admin App",
           autocomplete: true,
         });
         result = { order: orderRes?.order, payment: payRes?.payment };
@@ -850,24 +866,22 @@ serve(async (req) => {
       }
 
       case "membership.charge": {
-        // Charge membership renewal or signup via catalog item
-        const tier = params.tier as keyof typeof CATALOG.membership;
-        const variationId = CATALOG.membership[tier];
-        if (!variationId) { result = { error: `Unknown tier: ${tier}` }; break; }
+        // Charge membership signup via catalog item (SKU lookup)
+        // Enrollment fee is handled automatically by Square modifier on the membership item
+        const tier = params.tier as string;
+        const memSku = MEMBERSHIP_SKUS[tier];
+        if (!memSku) { result = { error: `Unknown tier: ${tier}` }; break; }
+        const variationId = await skuToVariationId(memSku);
+        if (!variationId) { result = { error: `SKU lookup failed for membership: ${memSku}` }; break; }
+        // Single line item — Square modifier adds enrollment fee automatically
         const lineItems: any[] = [{ quantity: "1", catalog_object_id: variationId, item_type: "ITEM" }];
-        // Add enrollment fee if requested
-        if (params.enrollment_fee && CATALOG.enrollment[tier as keyof typeof CATALOG.enrollment]) {
-          lineItems.push({ quantity: "1", catalog_object_id: CATALOG.enrollment[tier as keyof typeof CATALOG.enrollment], item_type: "ITEM" });
-        }
-        const memTaxes = await getCatalogTaxes(variationId);
         const orderRes = await squareRequest("/orders", "POST", {
           idempotency_key: crypto.randomUUID(),
           order: {
             location_id: LOCATION_ID,
             customer_id: params.square_customer_id,
-            reference_id: "BGS App",
+            reference_id: "BGS Admin App",
             line_items: lineItems,
-            ...(memTaxes.length > 0 ? { taxes: memTaxes } : {}),
           },
         });
         const orderId = orderRes?.order?.id;
@@ -880,7 +894,7 @@ serve(async (req) => {
           customer_id: params.square_customer_id,
           location_id: LOCATION_ID,
           order_id: orderId,
-          reference_id: "BGS App",
+          reference_id: "BGS Admin App",
           note: `${tier} membership`,
           autocomplete: true,
         });
@@ -890,23 +904,24 @@ serve(async (req) => {
 
       case "lesson.purchase": {
         // Purchase lesson package via catalog item — differentiated by coach and member status
-        const coach = params.coach_id as keyof typeof CATALOG.lessons; // "NC" or "SE"
+        const coach = params.coach_id as keyof typeof LESSON_SKUS; // "NC" or "SE"
         const isMember = params.is_member === true;
         const hours = params.hours; // 1, 3, or 5
-        const pkgKey = `${hours}hr_${isMember ? "member" : "nonmember"}` as keyof typeof CATALOG.lessons["NC"];
-        const coachCatalog = CATALOG.lessons[coach];
-        if (!coachCatalog) { result = { error: `Unknown coach: ${coach}` }; break; }
-        const variationId = coachCatalog[pkgKey];
-        if (!variationId) { result = { error: `Unknown package: ${pkgKey}` }; break; }
+        const pkgKey = `${hours}hr_${isMember ? "member" : "nonmember"}` as keyof typeof LESSON_SKUS["NC"];
+        const coachSkus = LESSON_SKUS[coach];
+        if (!coachSkus) { result = { error: `Unknown coach: ${coach}` }; break; }
+        const lesSku = coachSkus[pkgKey];
+        if (!lesSku) { result = { error: `Unknown package: ${pkgKey}` }; break; }
+        const variationId = await skuToVariationId(lesSku);
+        if (!variationId) { result = { error: `SKU lookup failed for lesson: ${lesSku}` }; break; }
         const orderRes = await squareRequest("/orders", "POST", {
           idempotency_key: crypto.randomUUID(),
           order: {
             location_id: LOCATION_ID,
             customer_id: params.square_customer_id,
-            reference_id: "BGS App",
+            reference_id: "BGS Admin App",
             line_items: [{ quantity: "1", catalog_object_id: variationId, item_type: "ITEM" }],
-            // Lessons are not taxable per catalog settings
-            taxes: [],
+            // Taxes applied by Square at catalog level
           },
         });
         const orderId = orderRes?.order?.id;
@@ -919,7 +934,7 @@ serve(async (req) => {
           customer_id: params.square_customer_id,
           location_id: LOCATION_ID,
           order_id: orderId,
-          reference_id: "BGS App",
+          reference_id: "BGS Admin App",
           note: `${hours}-hr lesson package — ${coach}`,
           autocomplete: true,
         });
