@@ -441,6 +441,20 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
     await logBkChange(selB.id, "Cancelled", custName + " · Bay " + selB.bay + " · " + (selB.start_time||selB.time));
+    // Record cancellation in transaction history
+    if (selB.customer_id || selB.custObj?.id) {
+      const bkType = selB.type === "lesson" ? "Lesson" : `Bay ${selB.bay}`;
+      const bkDate = selB.date || "";
+      const bkTime = selB.start_time || selB.time || "";
+      const isPaid = !!(selB.square_payment_id && selB.amount > 0);
+      await db.post("transactions", {
+        customer_id: selB.customer_id || selB.custObj?.id,
+        description: `Cancellation · ${bkType} · ${bkDate} · ${bkTime} — ${isPaid ? `$${Number(selB.amount).toFixed(2)} paid — refund pending review` : "Not paid — no refund"} · Cancelled by staff`,
+        date: dateKey(new Date()),
+        amount: 0,
+        payment_label: "Admin",
+      });
+    }
 
     // Send cancellation email to customer and BCC to info@
     const bkType = selB.type || "bay";
@@ -483,7 +497,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: newCredits });
       await db.post("transactions", {
         customer_id:  cust.id,
-        description:  `Refund (credits) \u00b7 Bay ${bk.bay}`,
+        description:  `Cancellation · Bay ${bk.bay} · ${bk.date || ""} · ${bk.start_time || ""} — ${creditsBack}hr credit refund · Cancelled by staff`,
         date:         dateKey(new Date()),
         amount:       creditsBack,
         payment_label: "Credits",
@@ -497,7 +511,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       });
       await db.post("transactions", {
         customer_id:  bk.customer_id,
-        description:  `Refund \u00b7 Bay ${bk.bay}`,
+        description:  `Cancellation · Bay ${bk.bay} · ${bk.date || ""} · ${bk.start_time || ""} — $${Number(bk.amount||0).toFixed(2)} refunded to card · Cancelled by staff`,
         date:         dateKey(new Date()),
         amount:       -(bk.amount || 0),
         payment_label: "Refund",
