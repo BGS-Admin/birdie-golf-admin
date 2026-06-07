@@ -415,9 +415,26 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       const origPaid = orig.amount || 0;
       const diff     = Math.round((newCalc.total - origPaid) * 100) / 100;
       if (Math.abs(diff) >= 0.01) {
-        setSaving(false);
-        setPriceChangeModal({ diff, newTotal: newCalc.total, origPaid, newCalc, custName, durSlots, newBay, newTime, newDate, changes, custObj: selB.custObj });
-        return;
+        // For refunds (shorter booking): only offer refund if 24h+ before start
+        const startDt = new Date((newDate || orig.date) + "T" + (() => {
+          const [t, m] = (newTime || orig.start_time).split(" ");
+          let [h, mn] = t.split(":").map(Number);
+          if (m === "PM" && h !== 12) h += 12;
+          if (m === "AM" && h === 12) h = 0;
+          return String(h).padStart(2,"0") + ":" + String(mn).padStart(2,"0") + ":00-04:00";
+        })());
+        const hoursUntilStart = (startDt - new Date()) / 3600000;
+        const refundEligible = diff < 0 && hoursUntilStart >= 24;
+        const showDiff = diff > 0 || refundEligible;
+        if (showDiff) {
+          setSaving(false);
+          setPriceChangeModal({ diff, newTotal: newCalc.total, origPaid, newCalc, custName, durSlots, newBay, newTime, newDate, changes, custObj: selB.custObj, refundEligible });
+          return;
+        }
+        // Shorter booking within 24h — save without refund
+        if (diff < 0 && !refundEligible) {
+          // fall through to save without refund prompt
+        }
       }
     }
 
@@ -1170,15 +1187,20 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   const card = custCards?.[0];
                   const cust = priceChangeModal.custObj;
                   if (card?.square_card_id && cust?.square_customer_id) {
-                    const chargeRes = await sq("bay.charge", {
+                    // Charge only the difference amount, not the full new total
+                    const chargeRes = await sq("payment.create", {
                       square_customer_id: cust.square_customer_id,
                       card_id: card.square_card_id,
-                      slots: priceChangeModal.newCalc.hrs * 2,
-                      is_peak: priceChangeModal.newCalc.isPk,
-                      tier: cust.tier || "public",
-                      note: `Adjustment · Bay ${priceChangeModal.newBay} · ${priceChangeModal.newTime}`,
+                      amount: priceChangeModal.diff,
+                      note: `Booking adjustment · Bay ${priceChangeModal.newBay} · ${priceChangeModal.newTime} · ${priceChangeModal.durSlots * 0.5}hr`,
                     });
                     if (!chargeRes?.payment?.id) { fire("Charge failed. Save changes without charging?"); setSaving(false); return; }
+                    await db.post("transactions", {
+                      customer_id: cust.id || selB.customer_id,
+                      description: `Booking Adjustment · Bay ${priceChangeModal.newBay} · ${priceChangeModal.newTime} — Additional $${priceChangeModal.diff.toFixed(2)} charged`,
+                      date: dateKey(new Date()), amount: priceChangeModal.diff, payment_label: `${card.brand} ···${card.last4}`,
+                      square_payment_id: chargeRes.payment.id,
+                    });
                   }
                   await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: priceChangeModal.newBay, start_time: priceChangeModal.newTime, duration_slots: priceChangeModal.durSlots, admin_notes: selB.notes || "", amount: priceChangeModal.newTotal });
                   await logBkChange(selB.id, "Updated + Charged", priceChangeModal.custName + " · " + (priceChangeModal.changes.length ? priceChangeModal.changes.join(", ") : "Saved"));
@@ -1187,11 +1209,17 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                 }}>Charge ${priceChangeModal.diff.toFixed(2)} and Save</button>
               )}
               {priceChangeModal.diff < 0 && (
-                <button style={{ ...S.b1, background: GREEN }} disabled={saving} onClick={async () => {
-                  setSaving(true);
-                  setRefundModal({ ...selB, amount: Math.abs(priceChangeModal.diff) });
-                  setPriceChangeModal(null); setSaving(false);
-                }}>Issue ${Math.abs(priceChangeModal.diff).toFixed(2)} Refund</button>
+                priceChangeModal.refundEligible ? (
+                  <button style={{ ...S.b1, background: GREEN }} disabled={saving} onClick={async () => {
+                    setSaving(true);
+                    setRefundModal({ ...selB, amount: Math.abs(priceChangeModal.diff) });
+                    setPriceChangeModal(null); setSaving(false);
+                  }}>Issue ${Math.abs(priceChangeModal.diff).toFixed(2)} Refund</button>
+                ) : (
+                  <div style={{ padding: "10px 14px", background: "#FFF5E5", borderRadius: 10, fontSize: 12, color: "#E8890C" }}>
+                    Within 24h of start time — no refund applicable per cancellation policy.
+                  </div>
+                )
               )}
               <button style={{ ...GS.togBtn }} disabled={saving} onClick={async () => {
                 setSaving(true);
