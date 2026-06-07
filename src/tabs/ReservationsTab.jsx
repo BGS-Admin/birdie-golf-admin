@@ -29,9 +29,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const [resView,   setResView]   = useState("calendar");
   const [changeLog, setChangeLog] = useState([]);
   const [logLoading,setLogLoading]= useState(false);
-  const [histModal,      setHistModal]      = useState(null);
-  const [histLog,        setHistLog]        = useState([]);
-  const [confirmCancel,  setConfirmCancel]  = useState(false);
+  const [histModal, setHistModal] = useState(null);
+  const [histLog,   setHistLog]   = useState([]);
 
   const closeModal = useCallback(() => {
     setSelB(null);
@@ -39,7 +38,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     setCustCards([]);
     setLessonPkg(null);
     setRefundModal(null);
-    setConfirmCancel(false);
   }, []);
 
   /* ── booking change log helpers ── */
@@ -194,16 +192,14 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         custId  = newCust.id;
         custObj = newCust;
         // Create in Square too
-        // Search Square first, create only if not found
-        const sqSearch = await sq("customer.search", { phone, email: info.email || "" });
-        let sqId = sqSearch?.customers?.[0]?.id;
-        if (!sqId) {
-          const sqResult = await sq("customer.create", {
-            first_name: info.firstName, last_name: info.lastName || "",
-            phone, email: info.email || "", supabase_id: custId,
-          });
-          sqId = sqResult?.customer?.id;
-        }
+        const sqResult = await sq("customer.create", {
+          first_name: info.firstName,
+          last_name:  info.lastName || "",
+          phone,
+          email:      info.email || "",
+          supabase_id: custId,
+        });
+        const sqId = sqResult?.customer?.id;
         if (sqId) {
           await db.patch("customers", `id=eq.${custId}`, { square_customer_id: sqId });
           custObj = { ...custObj, square_customer_id: sqId };
@@ -363,6 +359,21 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   };
 
   /* ── save existing booking edits ── */
+  const [priceChangeModal, setPriceChangeModal] = React.useState(null);
+
+  const calcBayTotal = (durSlots, time, date) => {
+    const TAX_RATE = 0.07;
+    const d = new Date(date + "T12:00:00");
+    const isWk = d.getDay() === 0 || d.getDay() === 6;
+    const hour = toH(time);
+    const isPk = !isWk && hour >= 17;
+    const rate = isPk ? cfg.pk : cfg.op;
+    const hrs = durSlots * 0.5;
+    const subtotal = Math.round(hrs * rate * 100) / 100;
+    const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
+    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
+  };
+
   const saveEdits = async () => {
     setSaving(true);
     const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
@@ -396,6 +407,20 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     }
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
 
+    // Price change detection — only for paid bay bookings with a customer card on file
+    const isPaidBay = selB.type !== "lesson" && selB.square_payment_id && selB.custObj && !selB.isWalkIn;
+    if (isPaidBay && orig) {
+      const origCalc = calcBayTotal(orig.duration_slots || 2, orig.start_time, orig.date || newDate);
+      const newCalc  = calcBayTotal(durSlots, newTime, newDate);
+      const origPaid = orig.amount || 0;
+      const diff     = Math.round((newCalc.total - origPaid) * 100) / 100;
+      if (Math.abs(diff) >= 0.01) {
+        setSaving(false);
+        setPriceChangeModal({ diff, newTotal: newCalc.total, origPaid, newCalc, custName, durSlots, newBay, newTime, newDate, changes, custObj: selB.custObj });
+        return;
+      }
+    }
+
     await db.patch("bookings", `id=eq.${selB.id}`, {
       status:         selB.status,
       bay:            newBay,
@@ -416,6 +441,29 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
     await logBkChange(selB.id, "Cancelled", custName + " · Bay " + selB.bay + " · " + (selB.start_time||selB.time));
+
+    // Send cancellation email to customer and BCC to info@
+    const bkType = selB.type || "bay";
+    const emailPayload = {
+      type: "cancellation_booking",
+      customer_name: custName,
+      customer_email: selB.custObj?.email || null,
+      bcc_email: "info@birdiegolfstudios.com",
+      booking_type: bkType,
+      bay: selB.bay,
+      date: selB.date,
+      time: selB.start_time || selB.time,
+      duration: ((selB.duration_slots || 2) * 0.5) + "hr",
+      coach: selB.coach_name || null,
+      amount: selB.amount || 0,
+    };
+    if (selB.custObj?.email) {
+      sq("email.send", emailPayload).catch(e => console.error("Cancel email failed:", e));
+    }
+    // Always notify staff
+    sq("email.send", { ...emailPayload, customer_email: "info@birdiegolfstudios.com", bcc_email: null })
+      .catch(e => console.error("Staff cancel email failed:", e));
+
     fire("Booking cancelled");
     setSaving(false);
     closeModal();
@@ -555,15 +603,16 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color, borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
+                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
-                        <p style={{ fontSize: 10, fontWeight: 700, color: "#fff", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
+                        <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
                         <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 1 }}>
-                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: "rgba(255,255,255,0.25)", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
-                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: "rgba(255,255,255,0.25)", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
-                          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.8)" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
-                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: "rgba(255,255,255,0.25)", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: TC[cust.tier], padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
+                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
+                          <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
+                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {bk.square_payment_id && bk.amount > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: "rgba(255,255,255,0.3)", padding: "1px 4px", borderRadius: 3 }}>PAID</span>}
                         </div>
                       </div>
                     </div>
@@ -841,7 +890,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
             )}
 
             {/* ── Payment / Credits (when customer is selected) ── */}
-            {(selB.custObj && !selB.isWalkIn) && (
+            {(selB.custObj && !selB.isWalkIn) && (selB.square_payment_id && selB.amount > 0 ? (
+              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: GREEN }}>✓ Paid ${Number(selB.amount || 0).toFixed(2)}</span>
+                <span style={{ fontSize: 11, color: "#888", marginLeft: "auto" }}>via {selB.custObj?.first_name || "customer"}'s card on file</span>
+              </div>
+            ) : (
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
@@ -953,7 +1007,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   );
                 })()}
               </div>
-            )}
+            ))}
 
             {/* ── Status (existing booking) ── */}
             {!selB.isNew && (
@@ -1022,31 +1076,86 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                       {X.refund(14)} Refund
                     </button>
                   )}
-                  {!confirmCancel ? (
-                    <button
-                      style={{ ...S.bDanger, padding: "10px 14px" }}
-                      onClick={() => setConfirmCancel(true)}
-                      disabled={saving}
-                    >
-                      {X.trash(14)} Cancel
-                    </button>
-                  ) : (
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#FFF0F0", border: "1px solid #E0392833", borderRadius: 10, padding: "8px 12px" }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: RED }}>Sure?</span>
-                      <button style={{ ...S.bDanger, padding: "6px 12px", fontSize: 12 }} onClick={cancelBooking} disabled={saving}>
-                        {saving ? "Cancelling..." : "Yes, Cancel"}
-                      </button>
-                      <button style={{ fontSize: 12, color: "#888", background: "none", border: "none", cursor: "pointer", fontFamily: ff, fontWeight: 600 }} onClick={() => setConfirmCancel(false)}>
-                        Keep
-                      </button>
-                    </div>
-                  )}
+                  <button
+                    style={{ ...S.bDanger, padding: "10px 14px" }}
+                    onClick={cancelBooking}
+                    disabled={saving}
+                  >
+                    {X.trash(14)} Cancel
+                  </button>
                 </>
               )}
               <button style={{ ...GS.togBtn, padding: "10px 14px" }} onClick={async () => { await loadBookingHistory(selB.id); setHistModal(selB.id); }}>History</button>
               <button style={{ ...GS.togBtn, padding: "10px 14px" }} onClick={closeModal}>Close</button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          PRICE CHANGE MODAL
+      ══════════════════════════════════════ */}
+      {priceChangeModal && (
+        <div style={S.ov} onClick={() => setPriceChangeModal(null)}>
+          <div style={{ ...S.mod, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Price Change Detected</h3>
+            <p style={{ fontSize: 13, color: "#888", marginBottom: 16 }}>
+              The changes you made affect the booking price.
+            </p>
+            <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: "#888" }}>Originally paid</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>${Number(priceChangeModal.origPaid).toFixed(2)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: "#888" }}>New total</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>${priceChangeModal.newTotal.toFixed(2)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #e8e8e6", paddingTop: 8, marginTop: 4 }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>{priceChangeModal.diff > 0 ? "Amount to charge" : "Amount to refund"}</span>
+                <span style={{ fontSize: 15, fontWeight: 700, color: priceChangeModal.diff > 0 ? RED : GREEN }}>${Math.abs(priceChangeModal.diff).toFixed(2)}</span>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {priceChangeModal.diff > 0 && (
+                <button style={{ ...S.b1, background: GREEN }} disabled={saving} onClick={async () => {
+                  setSaving(true);
+                  const card = custCards?.[0];
+                  const cust = priceChangeModal.custObj;
+                  if (card?.square_card_id && cust?.square_customer_id) {
+                    const chargeRes = await sq("bay.charge", {
+                      square_customer_id: cust.square_customer_id,
+                      card_id: card.square_card_id,
+                      slots: priceChangeModal.newCalc.hrs * 2,
+                      is_peak: priceChangeModal.newCalc.isPk,
+                      tier: cust.tier || "public",
+                      note: `Adjustment · Bay ${priceChangeModal.newBay} · ${priceChangeModal.newTime}`,
+                    });
+                    if (!chargeRes?.payment?.id) { fire("Charge failed. Save changes without charging?"); setSaving(false); return; }
+                  }
+                  await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: priceChangeModal.newBay, start_time: priceChangeModal.newTime, duration_slots: priceChangeModal.durSlots, admin_notes: selB.notes || "", amount: priceChangeModal.newTotal });
+                  await logBkChange(selB.id, "Updated + Charged", priceChangeModal.custName + " · " + (priceChangeModal.changes.length ? priceChangeModal.changes.join(", ") : "Saved"));
+                  fire("Booking updated and additional charge applied ✓");
+                  setSaving(false); setPriceChangeModal(null); closeModal(); reload();
+                }}>Charge ${priceChangeModal.diff.toFixed(2)} and Save</button>
+              )}
+              {priceChangeModal.diff < 0 && (
+                <button style={{ ...S.b1, background: GREEN }} disabled={saving} onClick={async () => {
+                  setSaving(true);
+                  setRefundModal({ ...selB, amount: Math.abs(priceChangeModal.diff) });
+                  setPriceChangeModal(null); setSaving(false);
+                }}>Issue ${Math.abs(priceChangeModal.diff).toFixed(2)} Refund</button>
+              )}
+              <button style={{ ...GS.togBtn }} disabled={saving} onClick={async () => {
+                setSaving(true);
+                await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: priceChangeModal.newBay, start_time: priceChangeModal.newTime, duration_slots: priceChangeModal.durSlots, admin_notes: selB.notes || "" });
+                await logBkChange(selB.id, "Updated (no charge)", priceChangeModal.custName + " · " + (priceChangeModal.changes.length ? priceChangeModal.changes.join(", ") : "Saved"));
+                fire("Booking updated (no charge adjustment) ✓");
+                setSaving(false); setPriceChangeModal(null); closeModal(); reload();
+              }}>Save Without Charging</button>
+              <button style={{ ...GS.togBtn, color: RED }} onClick={() => setPriceChangeModal(null)}>Cancel</button>
+            </div>
           </div>
         </div>
       )}
