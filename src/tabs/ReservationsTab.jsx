@@ -914,7 +914,20 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                 <span style={{ fontSize: 13, fontWeight: 700, color: GREEN }}>✓ Paid ${Number(selB.amount || 0).toFixed(2)}</span>
                 <span style={{ fontSize: 11, color: "#888", marginLeft: "auto" }}>via {selB.custObj?.first_name || "customer"}'s card on file</span>
               </div>
-            ) : (
+            ) : !selB.isNew && (
+              <div style={{ background: "#fafaf8", border: "1px solid #e8e8e6", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: RED }}>● Not paid</span>
+                <button style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: GREEN, background: GREEN + "14", border: `1px solid ${GREEN}44`, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: ff }} onClick={async () => {
+                  const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+                  const calc = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
+                  await db.patch("bookings", `id=eq.${selB.id}`, { square_payment_id: "POS_PAID", amount: calc.total });
+                  await logBkChange(selB.id, "Marked as Paid", `$${calc.total.toFixed(2)} via Square POS`);
+                  fire("Marked as paid ✓");
+                  setSelB(p => ({ ...p, square_payment_id: "POS_PAID", amount: calc.total }));
+                  reload();
+                }}>Mark as Paid (Square POS)</button>
+              </div>
+            ) || (
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
