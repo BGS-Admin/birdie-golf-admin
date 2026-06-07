@@ -612,7 +612,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                           {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
                           <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
                           {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
-                          {bk.square_payment_id && bk.amount > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: "rgba(255,255,255,0.3)", padding: "1px 4px", borderRadius: 3 }}>PAID</span>}
+                          {(!bk.square_payment_id || !bk.amount) && bk.amount !== 0 && bk.customer_id && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: RED, padding: "1px 4px", borderRadius: 3 }}>NOT PAID</span>}
                         </div>
                       </div>
                     </div>
@@ -870,6 +870,24 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                 </select>
               </div>
             </div>
+
+            {/* ── Price change warning (paid bay bookings only) ── */}
+            {selB.square_payment_id && selB.amount > 0 && (selB.type || "bay") !== "lesson" && !selB.isNew && (() => {
+              const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+              const newCalc  = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
+              const diff     = Math.round((newCalc.total - (selB.amount || 0)) * 100) / 100;
+              if (Math.abs(diff) < 0.01) return null;
+              return (
+                <div style={{ background: diff > 0 ? "#FFF5E5" : "#f0fdf4", border: `1px solid ${diff > 0 ? "#E8890C44" : "#bbf7d0"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+                  <p style={{ fontSize: 12, fontWeight: 700, color: diff > 0 ? "#E8890C" : GREEN, margin: "0 0 4px" }}>
+                    {diff > 0 ? `⚠ Additional charge of $${diff.toFixed(2)} will apply` : `↩ Refund of $${Math.abs(diff).toFixed(2)} may apply`}
+                  </p>
+                  <p style={{ fontSize: 11, color: "#888", margin: 0 }}>
+                    Original: ${Number(selB.amount).toFixed(2)} → New: ${newCalc.total.toFixed(2)} · {diff > 0 ? "Notify the customer before saving." : "Consider issuing a refund after saving."}
+                  </p>
+                </div>
+              );
+            })()}
 
             {/* ── Coach (lesson only) ── */}
             {(selB.type || "bay") === "lesson" && (
