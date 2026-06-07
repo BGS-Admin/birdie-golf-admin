@@ -875,15 +875,16 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
             {selB.custObj && !selB.isWalkIn && (selB.type || "bay") !== "lesson" && !selB.isNew && (() => {
               const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
               const newCalc  = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
-              const diff     = Math.round((newCalc.total - (selB.amount || 0)) * 100) / 100;
+              const alreadyPaid = selB.square_payment_id ? (selB.amount || 0) : 0;
+              const diff     = Math.round((newCalc.total - alreadyPaid) * 100) / 100;
               if (Math.abs(diff) < 0.01) return null;
               return (
                 <div style={{ background: diff > 0 ? "#FFF5E5" : "#f0fdf4", border: `1px solid ${diff > 0 ? "#E8890C44" : "#bbf7d0"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
                   <p style={{ fontSize: 12, fontWeight: 700, color: diff > 0 ? "#E8890C" : GREEN, margin: "0 0 4px" }}>
-                    {diff > 0 ? `⚠ Additional charge of $${diff.toFixed(2)} will apply` : `↩ Refund of $${Math.abs(diff).toFixed(2)} may apply`}
+                    {diff > 0 ? `⚠ ${alreadyPaid > 0 ? "Additional charge" : "Charge"} of $${diff.toFixed(2)} will apply` : `↩ Refund of $${Math.abs(diff).toFixed(2)} may apply`}
                   </p>
                   <p style={{ fontSize: 11, color: "#888", margin: 0 }}>
-                    Original: ${Number(selB.amount).toFixed(2)} → New: ${newCalc.total.toFixed(2)} · {diff > 0 ? "Notify the customer before saving." : "Consider issuing a refund after saving."}
+                    {alreadyPaid > 0 ? `Original: $${alreadyPaid.toFixed(2)} → New: $${newCalc.total.toFixed(2)}` : `Total due: $${newCalc.total.toFixed(2)}`} · {diff > 0 ? "Notify the customer before saving." : "Consider issuing a refund after saving."}
                   </p>
                 </div>
               );
