@@ -29,8 +29,9 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const [resView,   setResView]   = useState("calendar");
   const [changeLog, setChangeLog] = useState([]);
   const [logLoading,setLogLoading]= useState(false);
-  const [histModal, setHistModal] = useState(null);
-  const [histLog,   setHistLog]   = useState([]);
+  const [histModal,      setHistModal]      = useState(null);
+  const [histLog,        setHistLog]        = useState([]);
+  const [confirmCancel,  setConfirmCancel]  = useState(false);
 
   const closeModal = useCallback(() => {
     setSelB(null);
@@ -38,6 +39,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     setCustCards([]);
     setLessonPkg(null);
     setRefundModal(null);
+    setConfirmCancel(false);
   }, []);
 
   /* ── booking change log helpers ── */
@@ -1020,13 +1022,25 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                       {X.refund(14)} Refund
                     </button>
                   )}
-                  <button
-                    style={{ ...S.bDanger, padding: "10px 14px" }}
-                    onClick={cancelBooking}
-                    disabled={saving}
-                  >
-                    {X.trash(14)} Cancel
-                  </button>
+                  {!confirmCancel ? (
+                    <button
+                      style={{ ...S.bDanger, padding: "10px 14px" }}
+                      onClick={() => setConfirmCancel(true)}
+                      disabled={saving}
+                    >
+                      {X.trash(14)} Cancel
+                    </button>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#FFF0F0", border: "1px solid #E0392833", borderRadius: 10, padding: "8px 12px" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: RED }}>Sure?</span>
+                      <button style={{ ...S.bDanger, padding: "6px 12px", fontSize: 12 }} onClick={cancelBooking} disabled={saving}>
+                        {saving ? "Cancelling..." : "Yes, Cancel"}
+                      </button>
+                      <button style={{ fontSize: 12, color: "#888", background: "none", border: "none", cursor: "pointer", fontFamily: ff, fontWeight: 600 }} onClick={() => setConfirmCancel(false)}>
+                        Keep
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
               <button style={{ ...GS.togBtn, padding: "10px 14px" }} onClick={async () => { await loadBookingHistory(selB.id); setHistModal(selB.id); }}>History</button>
