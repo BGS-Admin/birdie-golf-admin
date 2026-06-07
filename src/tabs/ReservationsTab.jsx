@@ -871,8 +871,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               </div>
             </div>
 
-            {/* ── Price change warning (paid bay bookings only) ── */}
-            {selB.square_payment_id && selB.amount > 0 && (selB.type || "bay") !== "lesson" && !selB.isNew && (() => {
+            {/* ── Price change warning (bay bookings with a customer) ── */}
+            {selB.custObj && !selB.isWalkIn && (selB.type || "bay") !== "lesson" && !selB.isNew && (() => {
               const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
               const newCalc  = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
               const diff     = Math.round((newCalc.total - (selB.amount || 0)) * 100) / 100;
