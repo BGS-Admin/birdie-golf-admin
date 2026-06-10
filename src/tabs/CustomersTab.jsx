@@ -6,7 +6,7 @@ const sq = async (action, params = {}) => {
   try {
     const r = await fetch(`${SB_URL}/functions/v1/square-proxy`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}`, "x-bgs-key": "bgs-app-2026-x9k3m7p" },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}` },
       body: JSON.stringify({ action, ...params }),
     });
     return r.ok ? await r.json() : null;
@@ -96,22 +96,15 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     const newCust = Array.isArray(rows) ? rows[0] : rows;
     if (!newCust?.id) { setSaveError("Failed to create customer."); setSaving(false); return; }
     // Search Square first (E.164 format), create only if not found
-    const phoneE164 = phone; // Edge Function adds +1 prefix internally
-    console.log("[BGS] saveCustomer: phone=", phone, "phoneE164=", phoneE164);
+    const phoneE164 = `+1${phone}`;
     const searchRes = await sq("customer.search", { phone: phoneE164, email: form.email.trim() });
-    console.log("[BGS] customer.search result:", JSON.stringify(searchRes));
     const sqId = searchRes?.customers?.[0]?.id;
     if (sqId) {
       await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: sqId });
     } else {
-      console.log("[BGS] no Square match, calling customer.create");
       const createRes = await sq("customer.create", { first_name: form.firstName.trim(), last_name: form.lastName.trim(), phone: phoneE164, email: form.email.trim(), supabase_id: newCust.id });
       const createdId = createRes?.customer?.id;
-      console.log("[BGS] customer.create result:", JSON.stringify(createRes), "createdId:", createdId);
-      if (createdId) {
-        const patchRes = await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: createdId });
-        console.log("[BGS] db.patch result:", JSON.stringify(patchRes));
-      }
+      if (createdId) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: createdId });
     }
     await logActivity?.(`Added customer: ${form.firstName.trim()} ${form.lastName.trim()}`);
     setSaving(false); setAddModal(false); onRefresh();
@@ -410,7 +403,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={GS.label}>PHONE NUMBER *</label>
-              <input style={GS.input} placeholder="10-digit number, e.g. 3051234567" type="tel" inputMode="numeric" value={form.phone}
+              <input style={GS.input} placeholder="3051234567" type="tel" inputMode="numeric" value={form.phone}
                 onChange={e => setForm(p => ({ ...p, phone: e.target.value.replace(/\D/g, "").slice(0, 10) }))} />
             </div>
             <div style={{ marginBottom: 20 }}>
