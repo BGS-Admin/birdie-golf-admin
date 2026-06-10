@@ -96,7 +96,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     const newCust = Array.isArray(rows) ? rows[0] : rows;
     if (!newCust?.id) { setSaveError("Failed to create customer."); setSaving(false); return; }
     // Search Square first (E.164 format), create only if not found
-    const phoneE164 = `+1${phone}`;
+    const phoneE164 = phone; // Edge Function adds +1 prefix internally
     const searchRes = await sq("customer.search", { phone: phoneE164, email: form.email.trim() });
     const sqId = searchRes?.customers?.[0]?.id;
     if (sqId) {
