@@ -95,14 +95,16 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     });
     const newCust = Array.isArray(rows) ? rows[0] : rows;
     if (!newCust?.id) { setSaveError("Failed to create customer."); setSaving(false); return; }
-    // Search Square first, create only if not found (mirrors booking app)
-    const searchRes = await sq("customer.search", { phone, email: form.email.trim() });
+    // Search Square first (E.164 format), create only if not found
+    const phoneE164 = `+1${phone}`;
+    const searchRes = await sq("customer.search", { phone: phoneE164, email: form.email.trim() });
     const sqId = searchRes?.customers?.[0]?.id;
     if (sqId) {
       await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: sqId });
     } else {
-      sq("customer.create", { first_name: form.firstName.trim(), last_name: form.lastName.trim(), phone, email: form.email.trim(), supabase_id: newCust.id })
-        .then(async r => { const id = r?.customer?.id; if (id) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: id }); });
+      const createRes = await sq("customer.create", { first_name: form.firstName.trim(), last_name: form.lastName.trim(), phone: phoneE164, email: form.email.trim(), supabase_id: newCust.id });
+      const createdId = createRes?.customer?.id;
+      if (createdId) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: createdId });
     }
     await logActivity?.(`Added customer: ${form.firstName.trim()} ${form.lastName.trim()}`);
     setSaving(false); setAddModal(false); onRefresh();
