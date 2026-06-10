@@ -6,7 +6,7 @@ const sq = async (action, params = {}) => {
   try {
     const r = await fetch(`${SB_URL}/functions/v1/square-proxy`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}` },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}`, "x-bgs-key": "bgs-app-2026-x9k3m7p" },
       body: JSON.stringify({ action, ...params }),
     });
     return r.ok ? await r.json() : null;
