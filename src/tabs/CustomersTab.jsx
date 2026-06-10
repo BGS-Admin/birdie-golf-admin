@@ -97,14 +97,21 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     if (!newCust?.id) { setSaveError("Failed to create customer."); setSaving(false); return; }
     // Search Square first (E.164 format), create only if not found
     const phoneE164 = phone; // Edge Function adds +1 prefix internally
+    console.log("[BGS] saveCustomer: phone=", phone, "phoneE164=", phoneE164);
     const searchRes = await sq("customer.search", { phone: phoneE164, email: form.email.trim() });
+    console.log("[BGS] customer.search result:", JSON.stringify(searchRes));
     const sqId = searchRes?.customers?.[0]?.id;
     if (sqId) {
       await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: sqId });
     } else {
+      console.log("[BGS] no Square match, calling customer.create");
       const createRes = await sq("customer.create", { first_name: form.firstName.trim(), last_name: form.lastName.trim(), phone: phoneE164, email: form.email.trim(), supabase_id: newCust.id });
       const createdId = createRes?.customer?.id;
-      if (createdId) await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: createdId });
+      console.log("[BGS] customer.create result:", JSON.stringify(createRes), "createdId:", createdId);
+      if (createdId) {
+        const patchRes = await db.patch("customers", `id=eq.${newCust.id}`, { square_customer_id: createdId });
+        console.log("[BGS] db.patch result:", JSON.stringify(patchRes));
+      }
     }
     await logActivity?.(`Added customer: ${form.firstName.trim()} ${form.lastName.trim()}`);
     setSaving(false); setAddModal(false); onRefresh();
