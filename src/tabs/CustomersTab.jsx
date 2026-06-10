@@ -403,7 +403,7 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={GS.label}>PHONE NUMBER *</label>
-              <input style={GS.input} placeholder="3051234567" type="tel" inputMode="numeric" value={form.phone}
+              <input style={GS.input} placeholder="10-digit number, e.g. 3051234567" type="tel" inputMode="numeric" value={form.phone}
                 onChange={e => setForm(p => ({ ...p, phone: e.target.value.replace(/\D/g, "").slice(0, 10) }))} />
             </div>
             <div style={{ marginBottom: 20 }}>
