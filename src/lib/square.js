@@ -10,3 +10,4 @@ export const sq = async (action, p = {}) => {
     return r.ok ? await r.json() : null;
   } catch { return null; }
 };
+// Wed Jun 10 12:50:34 EDT 2026
