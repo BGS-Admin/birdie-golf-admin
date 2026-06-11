@@ -47,10 +47,6 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
   const [detailData,  setDetailData]  = useState(null); // loaded detail
   const [detailTab,   setDetailTab]   = useState("bookings");
   const [detailLoad,  setDetailLoad]  = useState(false);
-  const [editModal,   setEditModal]   = useState(false);
-  const [editForm,    setEditForm]    = useState({ firstName: "", lastName: "", phone: "", email: "" });
-  const [editSaving,  setEditSaving]  = useState(false);
-  const [editError,   setEditError]   = useState("");
 
   const filtered = search
     ? customers.filter(c =>
@@ -112,52 +108,6 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     }
     await logActivity?.(`Added customer: ${form.firstName.trim()} ${form.lastName.trim()}`);
     setSaving(false); setAddModal(false); onRefresh();
-  };
-
-  /* ── Edit customer ── */
-  const openEdit = () => {
-    setEditForm({
-      firstName: detailCust.first_name || "",
-      lastName:  detailCust.last_name  || "",
-      phone:     String(detailCust.phone || "").replace(/\D/g, ""),
-      email:     detailCust.email || "",
-    });
-    setEditError("");
-    setEditModal(true);
-  };
-
-  const saveEdit = async () => {
-    setEditError("");
-    const phone = editForm.phone.replace(/\D/g, "");
-    if (!editForm.firstName.trim()) { setEditError("First name is required."); return; }
-    if (!editForm.lastName.trim())  { setEditError("Last name is required."); return; }
-    if (phone.length < 10) { setEditError("Please enter a valid 10-digit phone number."); return; }
-    if (phone !== String(detailCust.phone || "").replace(/\D/g, "")) {
-      const existing = await db.get("customers", `phone=eq.${phone}&select=id`);
-      if (existing?.length) { setEditError("A customer with this phone number already exists."); return; }
-    }
-    setEditSaving(true);
-    await db.patch("customers", `id=eq.${detailCust.id}`, {
-      first_name: editForm.firstName.trim(),
-      last_name:  editForm.lastName.trim(),
-      phone,
-      email: editForm.email.trim(),
-    });
-    if (detailCust.square_customer_id) {
-      await sq("customer.update", {
-        square_customer_id: detailCust.square_customer_id,
-        first_name: editForm.firstName.trim(),
-        last_name:  editForm.lastName.trim(),
-        phone,
-        email: editForm.email.trim(),
-      });
-    }
-    await logActivity?.(`Updated customer profile: ${editForm.firstName.trim()} ${editForm.lastName.trim()}`);
-    setEditSaving(false);
-    setEditModal(false);
-    const updated = { ...detailCust, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() };
-    setDetailCust(updated);
-    onRefresh();
   };
 
   /* ── Detail tabs ── */
@@ -413,13 +363,6 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
                 onClick={() => setDetailCust(null)}>✕</button>
             </div>
 
-            {/* Edit Profile button */}
-            <div style={{ marginBottom: 12, flexShrink: 0 }}>
-              <button style={{ ...GS.togBtn, padding: "7px 14px", fontSize: 12 }} onClick={openEdit}>
-                ✎ Edit Profile
-              </button>
-            </div>
-
             {/* Sub-tabs */}
             <div style={{ ...S.tabs, flexShrink: 0 }}>
               {DETAIL_TABS.map(t => (
@@ -478,51 +421,6 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
               <button style={{ ...S.b1, flex: 2, opacity: (form.firstName && form.lastName && form.phone.replace(/\D/g, "").length >= 10) ? 1 : 0.4 }}
                 disabled={saving || !form.firstName || !form.lastName || form.phone.replace(/\D/g, "").length < 10} onClick={saveCustomer}>
                 {saving ? "Saving..." : "Add Customer"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Edit Customer Modal ── */}
-      {editModal && (
-        <div style={S.ov} onClick={() => setEditModal(false)}>
-          <div style={{ ...S.mod, maxWidth: 440 }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Edit Customer Profile</h3>
-            <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>Changes will be saved to Supabase and Square.</p>
-            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-              <div style={{ flex: 1 }}>
-                <label style={GS.label}>FIRST NAME *</label>
-                <input style={GS.input} placeholder="First" value={editForm.firstName} autoFocus
-                  onChange={e => setEditForm(p => ({ ...p, firstName: e.target.value }))} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={GS.label}>LAST NAME *</label>
-                <input style={GS.input} placeholder="Last" value={editForm.lastName}
-                  onChange={e => setEditForm(p => ({ ...p, lastName: e.target.value }))} />
-              </div>
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={GS.label}>PHONE NUMBER *</label>
-              <input style={GS.input} placeholder="10-digit number, e.g. 3051234567" type="tel" inputMode="numeric" value={editForm.phone}
-                onChange={e => setEditForm(p => ({ ...p, phone: e.target.value.replace(/\D/g, "").slice(0, 10) }))} />
-            </div>
-            <div style={{ marginBottom: 20 }}>
-              <label style={GS.label}>EMAIL</label>
-              <input style={GS.input} placeholder="optional" type="email" value={editForm.email}
-                onChange={e => setEditForm(p => ({ ...p, email: e.target.value }))} />
-            </div>
-            {editError && (
-              <div style={{ background: "#FFF0F0", border: "1px solid #E0392822", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
-                <p style={{ fontSize: 12, color: RED }}>{editError}</p>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button style={{ ...GS.togBtn, flex: 1, padding: "12px 16px" }} onClick={() => setEditModal(false)}>Cancel</button>
-              <button style={{ ...S.b1, flex: 2, opacity: (editForm.firstName && editForm.lastName && editForm.phone.replace(/\D/g, "").length >= 10) ? 1 : 0.4 }}
-                disabled={editSaving || !editForm.firstName || !editForm.lastName || editForm.phone.replace(/\D/g, "").length < 10}
-                onClick={saveEdit}>
-                {editSaving ? "Saving..." : "Save Changes"}
               </button>
             </div>
           </div>
