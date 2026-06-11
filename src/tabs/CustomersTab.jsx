@@ -54,10 +54,6 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
   const [sqResults,   setSqResults]   = useState(null);
   const [sqSearching, setSqSearching] = useState(false);
   const [importing,   setImporting]   = useState(null);
-  const [editModal,   setEditModal]   = useState(false);
-  const [editForm,    setEditForm]    = useState({ firstName: "", lastName: "", phone: "", email: "" });
-  const [editSaving,  setEditSaving]  = useState(false);
-  const [editError,   setEditError]   = useState("");
 
   const filtered = search
     ? customers.filter(c =>
@@ -188,32 +184,6 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     setEditModal(false);
     const updated = { ...detailCust, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() };
     setDetailCust(updated);
-    onRefresh();
-  };
-
-  /* ── Edit customer ── */
-  const openEdit = () => {
-    setEditForm({ firstName: detailCust.first_name || "", lastName: detailCust.last_name || "", phone: String(detailCust.phone || "").replace(/\D/g, ""), email: detailCust.email || "" });
-    setEditError(""); setEditModal(true);
-  };
-  const saveEdit = async () => {
-    setEditError("");
-    const phone = editForm.phone.replace(/\D/g, "");
-    if (!editForm.firstName.trim()) { setEditError("First name is required."); return; }
-    if (!editForm.lastName.trim())  { setEditError("Last name is required."); return; }
-    if (phone.length < 10) { setEditError("Please enter a valid 10-digit phone number."); return; }
-    if (phone !== String(detailCust.phone || "").replace(/\D/g, "")) {
-      const existing = await db.get("customers", `phone=eq.${phone}&select=id`);
-      if (existing?.length) { setEditError("A customer with this phone number already exists."); return; }
-    }
-    setEditSaving(true);
-    await db.patch("customers", `id=eq.${detailCust.id}`, { first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() });
-    if (detailCust.square_customer_id) {
-      await sq("customer.update", { square_customer_id: detailCust.square_customer_id, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() });
-    }
-    await logActivity?.(`Updated customer profile: ${editForm.firstName.trim()} ${editForm.lastName.trim()}`);
-    setEditSaving(false); setEditModal(false);
-    setDetailCust(prev => ({ ...prev, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() }));
     onRefresh();
   };
 
