@@ -417,7 +417,7 @@ export default function AdminApp() {
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         <div style={{ flex: 1, overflowY: "auto" }}>
           {view === "res"      && <ReservationsTab customers={customers} bookings={bookings} bayBlocks={bayBlocks} cfg={cfg} hoursConfig={hoursConfig} fire={fire} reload={load} logActivity={logActivity} />}
-          {view === "cust"     && <CustomersTab    customers={customers} bookings={bookings} onRefresh={load} logActivity={logActivity} />}
+          {view === "cust"     && <CustomersTab    customers={customers} bookings={bookings} onRefresh={load} logActivity={logActivity} userRole={userRole} />}
           {view === "members"  && <MembersTab      customers={customers} fire={fire} reload={load} logActivity={logActivity} />}
           {view === "reports"  && <ReportsTab      bookings={bookings} customers={customers} />}
           {view === "lessons"  && <LessonsTab      customers={customers} />}

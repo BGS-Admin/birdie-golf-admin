@@ -6,7 +6,7 @@ const sq = async (action, params = {}) => {
   try {
     const r = await fetch(`${SB_URL}/functions/v1/square-proxy`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}` },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}`, "x-bgs-key": "bgs-app-2026-x9k3m7p" },
       body: JSON.stringify({ action, ...params }),
     });
     return r.ok ? await r.json() : null;
@@ -37,7 +37,7 @@ const EmptyRow = ({ msg }) => (
   <div style={{ padding: "14px 0", textAlign: "center", color: "#aaa", fontSize: 13 }}>{msg}</div>
 );
 
-export default function CustomersTab({ customers, bookings, onRefresh, logActivity }) {
+export default function CustomersTab({ customers, bookings, onRefresh, logActivity, userRole }) {
   const [search,      setSearch]      = useState("");
   const [addModal,    setAddModal]    = useState(false);
   const [form,        setForm]        = useState({ firstName: "", lastName: "", phone: "", email: "" });
@@ -51,6 +51,13 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
   const [editForm,    setEditForm]    = useState({ firstName: "", lastName: "", phone: "", email: "" });
   const [editSaving,  setEditSaving]  = useState(false);
   const [editError,   setEditError]   = useState("");
+  const [sqResults,   setSqResults]   = useState(null);
+  const [sqSearching, setSqSearching] = useState(false);
+  const [importing,   setImporting]   = useState(null);
+  const [editModal,   setEditModal]   = useState(false);
+  const [editForm,    setEditForm]    = useState({ firstName: "", lastName: "", phone: "", email: "" });
+  const [editSaving,  setEditSaving]  = useState(false);
+  const [editError,   setEditError]   = useState("");
 
   const filtered = search
     ? customers.filter(c =>
@@ -58,6 +65,30 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
         (c.phone || "").includes(search) ||
         (c.email || "").includes(search))
     : customers;
+
+  const handleSearchChange = (val) => { setSearch(val); setSqResults(null); };
+
+  const searchSquare = async () => {
+    if (!search.trim()) return;
+    setSqSearching(true); setSqResults(null);
+    const res = await sq("customer.search", { phone: search.trim(), email: search.trim() });
+    const sqCusts = (res?.customers || []).filter(sc => !customers.some(c => c.square_customer_id === sc.id));
+    setSqResults(sqCusts); setSqSearching(false);
+  };
+
+  const importSquareCustomer = async (sc) => {
+    setImporting(sc.id);
+    const phone = (sc.phone_number || "").replace(/\D/g, "").slice(-10);
+    const email = sc.email_address || "";
+    const existing = await db.get("customers", `phone=eq.${phone}&select=id`);
+    if (existing?.length) {
+      await db.patch("customers", `id=eq.${existing[0].id}`, { square_customer_id: sc.id });
+    } else {
+      await db.post("customers", { first_name: sc.given_name || "", last_name: sc.family_name || "", phone, email, tier: "none", bay_credits_remaining: 0, bay_credits_total: 0, square_customer_id: sc.id });
+    }
+    await logActivity?.(`Imported Square customer: ${sc.given_name} ${sc.family_name}`);
+    setImporting(null); setSqResults(null); setSearch(""); onRefresh();
+  };
 
   /* ── Load full customer detail ── */
   const openDetail = useCallback(async (cust) => {
@@ -157,6 +188,32 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
     setEditModal(false);
     const updated = { ...detailCust, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() };
     setDetailCust(updated);
+    onRefresh();
+  };
+
+  /* ── Edit customer ── */
+  const openEdit = () => {
+    setEditForm({ firstName: detailCust.first_name || "", lastName: detailCust.last_name || "", phone: String(detailCust.phone || "").replace(/\D/g, ""), email: detailCust.email || "" });
+    setEditError(""); setEditModal(true);
+  };
+  const saveEdit = async () => {
+    setEditError("");
+    const phone = editForm.phone.replace(/\D/g, "");
+    if (!editForm.firstName.trim()) { setEditError("First name is required."); return; }
+    if (!editForm.lastName.trim())  { setEditError("Last name is required."); return; }
+    if (phone.length < 10) { setEditError("Please enter a valid 10-digit phone number."); return; }
+    if (phone !== String(detailCust.phone || "").replace(/\D/g, "")) {
+      const existing = await db.get("customers", `phone=eq.${phone}&select=id`);
+      if (existing?.length) { setEditError("A customer with this phone number already exists."); return; }
+    }
+    setEditSaving(true);
+    await db.patch("customers", `id=eq.${detailCust.id}`, { first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() });
+    if (detailCust.square_customer_id) {
+      await sq("customer.update", { square_customer_id: detailCust.square_customer_id, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() });
+    }
+    await logActivity?.(`Updated customer profile: ${editForm.firstName.trim()} ${editForm.lastName.trim()}`);
+    setEditSaving(false); setEditModal(false);
+    setDetailCust(prev => ({ ...prev, first_name: editForm.firstName.trim(), last_name: editForm.lastName.trim(), phone, email: editForm.email.trim() }));
     onRefresh();
   };
 
@@ -345,12 +402,43 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
       {/* Search */}
       <div style={S.srch}>
         {X.search(16)}
-        <input style={S.srchIn} placeholder="Search name, phone, email..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input style={S.srchIn} placeholder="Search name, phone, email..." value={search} onChange={e => handleSearchChange(e.target.value)} />
+        {search && <button style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: 16, padding: "0 4px" }} onClick={() => handleSearchChange("")}>✕</button>}
       </div>
 
       {/* Customer list */}
       {filtered.length === 0 ? (
-        <div style={S.empty}><p>No customers {search ? "match" : "yet"}</p></div>
+        <div>
+          <div style={S.empty}><p>No customers {search ? "match your search" : "yet"}</p></div>
+          {search && (
+            <div style={{ textAlign: "center", marginTop: 8 }}>
+              <button style={{ ...S.b1, width: "auto", padding: "9px 18px", fontSize: 13, background: PURPLE }} onClick={searchSquare} disabled={sqSearching}>
+                {sqSearching ? "Searching Square..." : "🔍 Search Square Directory"}
+              </button>
+            </div>
+          )}
+          {sqResults !== null && (
+            <div style={{ marginTop: 20 }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#888", letterSpacing: 1, marginBottom: 10 }}>SQUARE DIRECTORY {sqResults.length === 0 ? "— NO RESULTS" : `— ${sqResults.length} FOUND`}</p>
+              {sqResults.length === 0 ? <div style={S.empty}><p>No matching customers in Square</p></div>
+              : sqResults.map(sc => (
+                <div key={sc.id} style={{ ...S.cR, alignItems: "center" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: "#88888818", color: "#888", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 13, fontFamily: mono, flexShrink: 0 }}>
+                    {(sc.given_name || "?")[0]}{(sc.family_name || "?")[0]}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontSize: 14, fontWeight: 600 }}>{sc.given_name} {sc.family_name}</p>
+                    <p style={{ fontSize: 11, color: "#888" }}>{fmtPhone(sc.phone_number)}{sc.email_address ? " · " + sc.email_address : ""}</p>
+                    <p style={{ fontSize: 10, color: PURPLE, marginTop: 2 }}>Square customer</p>
+                  </div>
+                  <button style={{ ...S.b1, width: "auto", padding: "7px 14px", fontSize: 12 }} onClick={() => importSquareCustomer(sc)} disabled={importing === sc.id}>
+                    {importing === sc.id ? "Importing..." : "Import"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       ) : filtered.map(c => {
         const bkCount  = bookings.filter(b => b.customer_id === c.id).length;
         const bayCount = bookings.filter(b => b.customer_id === c.id && b.type === "bay").length;
@@ -420,6 +508,11 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
               </button>
             </div>
 
+            {userRole === "owner" && (
+              <div style={{ marginBottom: 12, flexShrink: 0 }}>
+                <button style={{ ...GS.togBtn, padding: "7px 14px", fontSize: 12 }} onClick={openEdit}>✎ Edit Profile</button>
+              </div>
+            )}
             {/* Sub-tabs */}
             <div style={{ ...S.tabs, flexShrink: 0 }}>
               {DETAIL_TABS.map(t => (
@@ -522,6 +615,34 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
               <button style={{ ...S.b1, flex: 2, opacity: (editForm.firstName && editForm.lastName && editForm.phone.replace(/\D/g, "").length >= 10) ? 1 : 0.4 }}
                 disabled={editSaving || !editForm.firstName || !editForm.lastName || editForm.phone.replace(/\D/g, "").length < 10}
                 onClick={saveEdit}>
+                {editSaving ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editModal && (
+        <div style={S.ov} onClick={() => setEditModal(false)}>
+          <div style={{ ...S.mod, maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Edit Customer Profile</h3>
+            <p style={{ fontSize: 12, color: "#888", marginBottom: 20 }}>Changes will be saved to Supabase and Square.</p>
+            <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}><label style={GS.label}>FIRST NAME *</label>
+                <input style={GS.input} placeholder="First" value={editForm.firstName} autoFocus onChange={e => setEditForm(p => ({ ...p, firstName: e.target.value }))} /></div>
+              <div style={{ flex: 1 }}><label style={GS.label}>LAST NAME *</label>
+                <input style={GS.input} placeholder="Last" value={editForm.lastName} onChange={e => setEditForm(p => ({ ...p, lastName: e.target.value }))} /></div>
+            </div>
+            <div style={{ marginBottom: 12 }}><label style={GS.label}>PHONE NUMBER *</label>
+              <input style={GS.input} placeholder="3051234567" type="tel" inputMode="numeric" value={editForm.phone}
+                onChange={e => setEditForm(p => ({ ...p, phone: e.target.value.replace(/\D/g, "").slice(0, 10) }))} /></div>
+            <div style={{ marginBottom: 20 }}><label style={GS.label}>EMAIL</label>
+              <input style={GS.input} placeholder="optional" type="email" value={editForm.email} onChange={e => setEditForm(p => ({ ...p, email: e.target.value }))} /></div>
+            {editError && <div style={{ background: "#FFF0F0", border: "1px solid #E0392822", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}><p style={{ fontSize: 12, color: RED }}>{editError}</p></div>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ ...GS.togBtn, flex: 1, padding: "12px 16px" }} onClick={() => setEditModal(false)}>Cancel</button>
+              <button style={{ ...S.b1, flex: 2, opacity: (editForm.firstName && editForm.lastName && editForm.phone.replace(/\D/g, "").length >= 10) ? 1 : 0.4 }}
+                disabled={editSaving || !editForm.firstName || !editForm.lastName || editForm.phone.replace(/\D/g, "").length < 10} onClick={saveEdit}>
                 {editSaving ? "Saving..." : "Save Changes"}
               </button>
             </div>
