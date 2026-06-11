@@ -471,18 +471,15 @@ export default function CustomersTab({ customers, bookings, onRefresh, logActivi
                 onClick={() => setDetailCust(null)}>✕</button>
             </div>
 
-            {/* Edit Profile button */}
-            <div style={{ marginBottom: 12, flexShrink: 0 }}>
-              <button style={{ ...GS.togBtn, padding: "7px 14px", fontSize: 12 }} onClick={openEdit}>
-                ✎ Edit Profile
-              </button>
-            </div>
-
+            {/* Edit Profile button — owners only */}
             {userRole === "owner" && (
               <div style={{ marginBottom: 12, flexShrink: 0 }}>
-                <button style={{ ...GS.togBtn, padding: "7px 14px", fontSize: 12 }} onClick={openEdit}>✎ Edit Profile</button>
+                <button style={{ ...GS.togBtn, padding: "7px 14px", fontSize: 12 }} onClick={openEdit}>
+                  ✎ Edit Profile
+                </button>
               </div>
             )}
+
             {/* Sub-tabs */}
             <div style={{ ...S.tabs, flexShrink: 0 }}>
               {DETAIL_TABS.map(t => (
