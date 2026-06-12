@@ -179,6 +179,19 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
   };
 
+  const calcBayTotal = (durSlots, time, date) => {
+    const TAX_RATE = 0.07;
+    const d = new Date(date + "T12:00:00");
+    const isWk = d.getDay() === 0 || d.getDay() === 6;
+    const hour = toH(time);
+    const isPk = !isWk && hour >= 17;
+    const rate = isPk ? cfg.pk : cfg.op;
+    const hrs = durSlots * 0.5;
+    const subtotal = Math.round(hrs * rate * 100) / 100;
+    const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
+    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
+  };
+
   /* ── open new booking from grid click ── */
   const openNew = (bay, slot) => {
     setSelB({
