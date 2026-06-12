@@ -166,6 +166,19 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     return { avail, needed, used, remain };
   };
 
+  const calcBayTotal = (durSlots, time, date) => {
+    const TAX_RATE = 0.07;
+    const d = new Date(date + "T12:00:00");
+    const isWk = d.getDay() === 0 || d.getDay() === 6;
+    const hour = toH(time);
+    const isPk = !isWk && hour >= 17;
+    const rate = isPk ? cfg.pk : cfg.op;
+    const hrs = durSlots * 0.5;
+    const subtotal = Math.round(hrs * rate * 100) / 100;
+    const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
+    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
+  };
+
   /* ── open new booking from grid click ── */
   const openNew = (bay, slot) => {
     setSelB({
@@ -524,7 +537,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   const isMem = cust?.tier && cust.tier !== "none";
                   const slotH = 29;
                   const h     = (bk.duration_slots || 2) * slotH - 2;
-                  const notPaid = (!bk.square_payment_id && bk.amount > 0 && bk.customer_id);
+                  const notPaid = (!bk.square_payment_id || bk.square_payment_id === "") && bk.customer_id && bk.status !== "cancelled";
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
@@ -823,7 +836,25 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
             )}
 
             {/* ── Payment / Credits (when customer is selected) ── */}
-            {(selB.custObj && !selB.isWalkIn) && (
+            {(selB.custObj && !selB.isWalkIn) && (selB.square_payment_id && selB.amount > 0 ? (
+              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: GREEN }}>✓ Paid ${Number(selB.amount || 0).toFixed(2)}</span>
+                <span style={{ fontSize: 11, color: "#888", marginLeft: "auto" }}>via {selB.custObj?.first_name || "customer"}'s card on file</span>
+              </div>
+            ) : !selB.isNew && (
+              <div style={{ background: "#fafaf8", border: "1px solid #e8e8e6", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: RED }}>● Not paid</span>
+                <button style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: GREEN, background: GREEN + "14", border: `1px solid ${GREEN}44`, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: ff }} onClick={async () => {
+                  const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
+                  const calc = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
+                  await db.patch("bookings", `id=eq.${selB.id}`, { square_payment_id: "POS_PAID", amount: calc.total });
+                  await logBkChange(selB.id, "Marked as Paid", `$${calc.total.toFixed(2)} via Square POS`);
+                  fire("Marked as paid ✓");
+                  setSelB(p => ({ ...p, square_payment_id: "POS_PAID", amount: calc.total }));
+                  reload();
+                }}>Mark as Paid (Square POS)</button>
+              </div>
+            ) || (
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
@@ -841,7 +872,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                         onClick={() => setSelB(p => ({ ...p, cardId: card.id }))}
                       >
                         {X.card(14)}
-                        <span>{card.brand} \u2022\u2022\u2022\u2022 {card.last4}</span>
+                        <span>{card.brand} •••• {card.last4}</span>
                         {card.is_default && <span style={{ fontSize: 10, opacity: 0.7, marginLeft: "auto" }}>default</span>}
                       </button>
                     ))}
@@ -929,7 +960,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   );
                 })()}
               </div>
-            )}
+            ))}
 
             {/* ── Status (existing booking) ── */}
             {!selB.isNew && (
