@@ -4,7 +4,7 @@ import { sq } from "../lib/square.js";
 import {
   GREEN, PURPLE, RED, ORANGE, mono, ff,
   TC, TB, BK_C, SLOTS, DUR_MAP, DUR_LABELS, slotsToLabel,
-  toH, dateKey, fmtFull, addDays, getSlots, cn,
+  toH, dateKey, fmtFull, addDays, getSlots, cn, COACHES,
   X, GS, S,
 } from "../lib/constants.jsx";
 
@@ -31,8 +31,16 @@ function calcBayTotal(durSlots, startTime, date, cfg) {
 }
 
 // Returns credit coverage info for a member, or null for non-members / starter tier.
+// EB and Champion have unlimited/window-based credits — handled separately from Player numeric credits.
 function getCreditInfo(cust, durSlots) {
   if (!cust?.tier || cust.tier === "none" || cust.tier === "starter") return null;
+  if (cust.tier === "early_birdie" || cust.tier === "early_birdie_founders") {
+    return { isEB: true, avail: 0, needed: durSlots * 0.5, used: durSlots * 0.5, remain: 0 };
+  }
+  if (cust.tier === "champion") {
+    return { isChampion: true, avail: 0, needed: durSlots * 0.5, used: durSlots * 0.5, remain: 0 };
+  }
+  // Player tier uses numeric credits
   const avail  = cust.bay_credits_remaining || 0;
   const needed = durSlots * 0.5;
   const used   = Math.min(avail, needed);
@@ -237,43 +245,127 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const bookingDate = selB.date || dateKey(resDate);
     const bookingTime = selB.time || "9:00 AM";
     const creditInfo  = getCreditInfo(custObj, durSlots);
-    const creditsUsed = creditInfo?.used || 0;
+    const creditsUsed = creditInfo?.isEB || creditInfo?.isChampion ? durSlots * 0.5 : (creditInfo?.used || 0);
     const hasLessonPkg = !!(lessonPkg?.remaining_credits > 0 && selB.type === "lesson");
 
-    // Calculate charge using per-slot pricing (credits cover first slots)
-    let amount = 0;
-    if (selB.cardId && selB.cardId !== "in_person") {
+    // ── Conflict check ────────────────────────────────────────────────────────
+    const newStart = toH(bookingTime);
+    const newEnd   = newStart + durSlots * 0.5;
+    const conflict = bookings.find(b =>
+      b.bay === selB.bay && b.date === bookingDate && b.status !== "cancelled" &&
+      (() => { const bs = toH(b.start_time), be = bs + (b.duration_slots || 2) * 0.5; return newStart < be && newEnd > bs; })()
+    );
+    if (conflict) {
+      const cc = customers.find(c => c.id === conflict.customer_id);
+      fire(`Bay ${selB.bay} is already booked at ${conflict.start_time}${cc ? " · " + cn(cc) : ""}. Choose a different bay or time.`);
+      setSaving(false);
+      return;
+    }
+
+    // ── Charge via Square catalog actions (matches booking app) ───────────────
+    let sqPaymentId = null;
+    const sqCard = custCards.find(c => c.id === selB.cardId);
+
+    if (selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id && sqCard?.square_card_id) {
       if (selB.type === "lesson") {
         if (!hasLessonPkg) {
-          amount = custObj?.tier && custObj.tier !== "none" ? LESSON_RATE_MEMBER : LESSON_RATE_DEFAULT;
+          // Use lesson.purchase catalog action — matches booking app path, accrues loyalty
+          const isMem = !!(custObj?.tier && custObj.tier !== "none");
+          const chargeRes = await sq("lesson.purchase", {
+            square_customer_id: custObj.square_customer_id,
+            card_id:            sqCard.square_card_id,
+            coach_id:           selB.coach_id || selB.coach_name,
+            hours:              1,
+            is_member:          isMem,
+            source_name:        "BGS Admin App",
+          });
+          sqPaymentId = chargeRes?.payment?.id || null;
+          if (chargeRes?.error || !sqPaymentId) {
+            fire("Payment failed — please try again.");
+            setSaving(false);
+            return;
+          }
+        } else {
+          // $0 credit lesson — create tracking order
+          const orderRes = await sq("order.create", {
+            square_customer_id: custObj.square_customer_id,
+            apply_tax: false,
+            source_name: "BGS Admin App",
+            line_items: [{
+              name: `Lesson Credit · ${selB.coach_name || ""}`,
+              quantity: "1",
+              base_price_money: { amount: 0, currency: "USD" },
+            }],
+          });
+          sqPaymentId = orderRes?.order?.id || null;
         }
       } else {
-        const paidSlots  = creditInfo ? Math.round(creditInfo.remain * 2) : durSlots;
-        const skipSlots  = durSlots - paidSlots;
-        const startHour  = toH(bookingTime) + skipSlots * 0.5;
-        const adjTime    = SLOTS.find(s => Math.abs(toH(s) - startHour) < 0.01) || bookingTime;
-        const calc       = calcBayTotal(paidSlots, adjTime, bookingDate, cfg);
-        amount = calc.total;
+        // Bay booking — use bay.charge catalog action (loyalty, catalog tracking, tax server-side)
+        const isWeekend = new Date(bookingDate + "T12:00:00").getDay() % 6 === 0;
+        const isPeak    = !isWeekend && toH(bookingTime) >= 17;
+        const tierForCharge = (creditInfo?.isEB || creditInfo?.isChampion)
+          ? custObj.tier.replace("_founders", "") // normalize founders → early_birdie for Square
+          : custObj?.tier || "public";
+
+        // For paid portion only: EB/Champion are $0, Player uses remaining after credits, others full
+        const paidSlots = creditInfo?.isEB || creditInfo?.isChampion ? 0
+                        : creditInfo ? Math.round(creditInfo.remain * 2)
+                        : durSlots;
+
+        if (paidSlots > 0) {
+          const chargeRes = await sq("bay.charge", {
+            square_customer_id: custObj.square_customer_id,
+            card_id:            sqCard.square_card_id,
+            slots:              paidSlots,
+            is_peak:            isPeak,
+            tier:               tierForCharge,
+            note:               `Bay ${selB.bay} · ${bookingDate} · ${bookingTime} · Admin`,
+            source_name:        "BGS Admin App",
+          });
+          sqPaymentId = chargeRes?.payment?.id || null;
+          if (chargeRes?.error || !sqPaymentId) {
+            fire("Payment failed — please try again.");
+            setSaving(false);
+            return;
+          }
+        } else {
+          // $0 booking (full credit coverage) — tracking order only
+          const orderRes = await sq("bay.charge", {
+            square_customer_id: custObj.square_customer_id,
+            card_id:            null,
+            slots:              durSlots,
+            is_peak:            isPeak,
+            tier:               tierForCharge,
+            note:               `Bay ${selB.bay} · ${bookingDate} · ${bookingTime} · Member Credit · Admin`,
+            track_only:         true,
+            source_name:        "BGS Admin App",
+          });
+          sqPaymentId = orderRes?.order?.id || null;
+        }
       }
     }
 
-    // Charge card
-    let sqPaymentId = null;
-    if (amount > 0 && custObj?.square_customer_id) {
-      const sqCard = custCards.find(c => c.id === selB.cardId);
-      if (sqCard?.square_card_id) {
-        const payment = await sq("payment.create", {
-          square_customer_id: custObj.square_customer_id,
-          card_id:            sqCard.square_card_id,
-          amount,
-          note:               `Bay ${selB.bay} · ${bookingDate}`,
-        });
-        sqPaymentId = payment?.payment?.id || null;
+    // Recalculate actual amount charged (for transaction record)
+    let amount = 0;
+    if (selB.cardId && selB.cardId !== "in_person" && sqPaymentId) {
+      if (selB.type === "lesson" && !hasLessonPkg) {
+        amount = custObj?.tier && custObj.tier !== "none" ? LESSON_RATE_MEMBER : LESSON_RATE_DEFAULT;
+      } else if (selB.type !== "lesson") {
+        const paidSlots = creditInfo?.isEB || creditInfo?.isChampion ? 0
+                        : creditInfo ? Math.round(creditInfo.remain * 2)
+                        : durSlots;
+        if (paidSlots > 0) {
+          const skipSlots = durSlots - paidSlots;
+          const startHour = toH(bookingTime) + skipSlots * 0.5;
+          const adjTime   = SLOTS.find(s => Math.abs(toH(s) - startHour) < 0.01) || bookingTime;
+          const calc      = calcBayTotal(paidSlots, adjTime, bookingDate, cfg);
+          amount = calc.total;
+        }
       }
     }
 
     // Write booking
-    await db.post("bookings", {
+    const newBookingRows = await db.post("bookings", {
       customer_id:       custId || null,
       type:              selB.type || "bay",
       bay:               selB.bay  || 1,
@@ -285,34 +377,46 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       credits_used:      creditsUsed,
       discount:          0,
       coach_name:        selB.type === "lesson" ? (selB.coach_name || "") : "",
+      coach_id:          selB.type === "lesson" ? (selB.coach_id || null) : null,
       admin_notes:       selB.notes || "",
       square_payment_id: sqPaymentId,
     });
 
-    // Deduct bay credits
-    if (creditsUsed > 0 && custObj?.id) {
+    const newBookingId = Array.isArray(newBookingRows) ? newBookingRows[0]?.id : newBookingRows?.id;
+
+    // Deduct bay credits (Player only — EB/Champion have unlimited)
+    if (!creditInfo?.isEB && !creditInfo?.isChampion && creditsUsed > 0 && custObj?.id) {
       await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed) });
+    }
+
+    // Deduct lesson credits if package was used
+    if (hasLessonPkg && lessonPkg?.id) {
+      const newRemaining = Math.max(0, lessonPkg.remaining_credits - 1);
+      await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, {
+        remaining_credits: newRemaining,
+        status: newRemaining === 0 ? "exhausted" : "active",
+      });
     }
 
     // Transaction record
     if (custId) {
       await db.post("transactions", {
         customer_id:       custId,
-        description:       `${selB.type === "lesson" ? "Lesson" : "Bay"} Booking · Bay ${selB.bay}`,
+        description:       `${selB.type === "lesson" ? "Lesson" : "Bay"} Booking · Bay ${selB.bay} · ${bookingTime}`,
         date:              bookingDate,
         amount,
-        payment_label:     selB.cardId === "in_person" ? "In Person" : selB.cardId ? "Card" : "Credits",
+        payment_label:     selB.cardId === "in_person" ? "In Person" : hasLessonPkg ? "Lesson Credit" : creditsUsed > 0 && amount === 0 ? "Member Credit" : "Card",
         square_payment_id: sqPaymentId,
       });
     }
 
     // Confirmation email
     if (custObj?.email) {
-      const fmtDate = new Date(bookingDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+      const fmtDateStr = new Date(bookingDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
       await sq("email.send", {
         customer_name:  cn(custObj) || custObj.first_name,
         customer_email: custObj.email,
-        date:           fmtDate,
+        date:           fmtDateStr,
         time:           bookingTime,
         duration:       `${durSlots * 0.5}hr`,
         bay:            "Bay " + (selB.bay || 1),
@@ -326,9 +430,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     }
 
     // Log creation
-    const created = await db.get("bookings", `customer_id=eq.${custId || "null"}&order=created_at.desc&limit=1&select=id,bay,date,start_time,type`);
-    if (created?.[0]?.id) {
-      await logBkChange(created[0].id, "Created", `${cn(custObj) || "Walk-in"} · Bay ${created[0].bay} · ${created[0].start_time}`);
+    if (newBookingId) {
+      await logBkChange(newBookingId, "Created", `${cn(custObj) || "Walk-in"} · Bay ${selB.bay} · ${bookingTime}`);
     }
 
     fire("Booking created ✓");
@@ -376,13 +479,74 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     reload();
   };
 
-  // ── Cancel booking ─────────────────────────────────────────────────────────
+  // ── Cancel booking — with refund, credit return, and email ──────────────────
 
   const cancelBooking = async () => {
     setSaving(true);
-    await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
-    await logBkChange(selB.id, "Cancelled", `${cn(selB.custObj) || "Walk-in"} · Bay ${selB.bay} · ${selB.start_time || selB.time}`);
-    fire("Booking cancelled");
+    const bk   = selB;
+    const cust = bk.custObj;
+
+    // Mark cancelled
+    await db.patch("bookings", `id=eq.${bk.id}`, {
+      status:       "cancelled",
+      cancelled_at: new Date().toISOString(),
+    });
+
+    const refundParts = [];
+
+    // Refund bay credits if any were used (Player only)
+    const creditInfo = getCreditInfo(cust, bk.duration_slots || 2);
+    const creditsUsed = bk.credits_used || 0;
+    if (creditsUsed > 0 && cust?.id && !creditInfo?.isEB && !creditInfo?.isChampion) {
+      const newCredits = cust.tier === "player"
+        ? Math.min((cust.bay_credits_remaining || 0) + creditsUsed, 8)
+        : (cust.bay_credits_remaining || 0) + creditsUsed;
+      await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: newCredits });
+      refundParts.push(`${creditsUsed} hr credit${creditsUsed !== 1 ? "s" : ""} returned`);
+    }
+
+    // Refund card charge if any money was paid
+    if (bk.square_payment_id && bk.amount > 0 && !bk.square_payment_id.startsWith("POS_PAID")) {
+      await sq("payment.refund", {
+        payment_id: bk.square_payment_id,
+        amount:     bk.amount,
+        reason:     "Admin cancellation",
+      });
+      refundParts.push(`$${Number(bk.amount).toFixed(2)} refunded to card`);
+    }
+
+    // Transaction record
+    const refundDesc = refundParts.length > 0
+      ? refundParts.join(" + ") + " · Cancelled by admin"
+      : "No refund applicable · Cancelled by admin";
+
+    if (cust?.id) {
+      await db.post("transactions", {
+        customer_id:   cust.id,
+        description:   `Cancellation · ${bk.type === "lesson" ? "Lesson" : "Bay " + bk.bay} · ${bk.date} · ${bk.start_time || bk.time} — ${refundDesc}`,
+        date:          dateKey(new Date()),
+        amount:        bk.amount > 0 && bk.square_payment_id ? -(bk.amount) : 0,
+        payment_label: bk.amount > 0 ? "Refund" : "N/A",
+      });
+    }
+
+    // Cancellation emails — customer + staff
+    if (cust?.email) {
+      const emailPayload = {
+        customer_email: cust.email,
+        customer_name:  cn(cust),
+        booking_type:   bk.type === "lesson" ? "Lesson" : "Bay Booking",
+        bay:            bk.bay ? "Bay " + bk.bay : null,
+        date:           bk.date,
+        time:           bk.start_time || bk.time,
+        refund_info:    refundDesc,
+      };
+      await sq("email.send", { type: "cancellation", ...emailPayload });
+      await sq("email.send", { type: "cancellation", ...emailPayload, customer_email: "info@birdiegolfstudios.com", customer_name: "Staff" });
+    }
+
+    await logBkChange(bk.id, "Cancelled", `${cn(cust) || "Walk-in"} · Bay ${bk.bay} · ${bk.start_time || bk.time} · ${refundDesc}`);
+    fire(refundParts.length > 0 ? "Cancelled · " + refundParts.join(" + ") : "Booking cancelled");
     setSaving(false);
     closeModal();
     reload();
@@ -433,6 +597,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const durSlots  = DUR_MAP[selB.dur] || 2;
     const date      = selB.date || dateKey(resDate);
     const startHour = toH(selB.time || "9:00 AM");
+
+    // Early Birdie and Champion: $0 — fully covered
+    if (creditInfo?.isEB) {
+      return { type: "bay_eb", totalHrs: durSlots * 0.5, noCard };
+    }
+    if (creditInfo?.isChampion) {
+      return { type: "bay_champion", totalHrs: durSlots * 0.5, noCard };
+    }
+
     const paidSlots = creditInfo ? Math.round(creditInfo.remain * 2) : durSlots;
     const skipSlots = durSlots - paidSlots;
 
@@ -741,10 +914,10 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                 <div style={{ marginBottom: 12 }}>
                   <label style={GS.label}>COACH</label>
                   <div style={{ display: "flex", gap: 6 }}>
-                    {["Santiago Espinoza", "Nicolas Cavero"].map(c => (
-                      <button key={c} style={{ ...GS.togBtn, flex: 1, ...(selB.coach_name === c ? { background: PURPLE, color: "#fff" } : {}) }}
-                        onClick={() => setSelB(p => ({ ...p, coach_name: c }))}>
-                        {c.split(" ")[0]}
+                    {COACHES.map(c => (
+                      <button key={c.id} style={{ ...GS.togBtn, flex: 1, ...(selB.coach_id === c.id ? { background: PURPLE, color: "#fff" } : {}) }}
+                        onClick={() => setSelB(p => ({ ...p, coach_id: c.id, coach_name: c.name }))}>
+                        {c.name.split(" ")[0]}
                       </button>
                     ))}
                   </div>
@@ -798,6 +971,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                     {/* Amount preview — dynamic, always visible once customer is selected */}
                     {preview && (
                       <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                        {(preview.type === "bay_eb" || preview.type === "bay_champion") && (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
+                              {preview.type === "bay_eb" ? "Early Birdie — Included (8am–4pm window)" : "Champion — Unlimited"}
+                            </span>
+                            <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: GREEN }}>$0.00</span>
+                          </div>
+                        )}
+
                         {preview.type === "lesson_credit" && (<>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>1 lesson credit applied</span>

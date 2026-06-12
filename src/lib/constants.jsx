@@ -9,19 +9,21 @@ export const PURPLE = "#5B6DCD";
 export const ORANGE = "#E8890C";
 export const RED    = "#E03928";
 
-export const TC = { none: "#888", starter: "#7AB89A", early_birdie: "#4A8B6E", player: GREEN, champion: "#124A2B" };
-export const TN = { none: "Non-Member", starter: "Starter", early_birdie: "Early Birdie", player: "Player", champion: "Champion" };
-export const TB = { starter: "STR", early_birdie: "EBD", player: "PLR", champion: "CHP" };
+export const TC = { none: "#888", starter: "#7AB89A", early_birdie: "#4A8B6E", early_birdie_founders: "#4A8B6E", player: GREEN, champion: "#124A2B" };
+export const TN = { none: "Non-Member", starter: "Starter", early_birdie: "Early Birdie", early_birdie_founders: "Early Birdie (Founders)", player: "Player", champion: "Champion" };
+export const TB = { starter: "STR", early_birdie: "EBD", early_birdie_founders: "EBD", player: "PLR", champion: "CHP" };
 export const BK_C = { bay_member: GREEN, bay_walkin: "#64748B", lesson: PURPLE };
 
 export const TIERS = [
-  { id: "starter",      n: "Starter",      p: 45,  c: "#7AB89A", badge: "STR", hrs: 0,  enrollment: 0,
+  { id: "starter",               n: "Starter",      p: 45,  c: "#7AB89A", badge: "STR", hrs: 0,  enrollment: 0,
     perks: ["20% off hourly bay rate", "Club storage", "Members-only invites"] },
-  { id: "early_birdie", n: "Early Birdie", p: 150, c: "#4A8B6E", badge: "EBD", hrs: -1, enrollment: 50,
+  { id: "early_birdie",          n: "Early Birdie", p: 175, c: "#4A8B6E", badge: "EBD", hrs: -1, enrollment: 50,
     perks: ["Up to 2 non-peak hours per day", "20% off additional non-peak hours beyond 2 hrs", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
-  { id: "player",       n: "Player",       p: 200, c: GREEN,      badge: "PLR", hrs: 8,  enrollment: 75,
+  { id: "early_birdie_founders", n: "Early Birdie (Founders)", p: 150, c: "#4A8B6E", badge: "EBD", hrs: -1, enrollment: 0,
+    perks: ["Up to 2 non-peak hours per day", "20% off additional non-peak hours beyond 2 hrs", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
+  { id: "player",                n: "Player",       p: 200, c: GREEN,      badge: "PLR", hrs: 8,  enrollment: 75,
     perks: ["8 hours / month", "20% off additional hours", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
-  { id: "champion",     n: "Champion",     p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, enrollment: 0,
+  { id: "champion",              n: "Champion",     p: 600, c: "#124A2B",  badge: "CHP", hrs: -1, enrollment: 0,
     perks: ["Unlimited hours", "20% off lessons", "15% off food & beverage", "10% off retail", "Club storage", "Members-only invites"] },
 ];
 
@@ -33,8 +35,8 @@ export const TEAM = [];
 export const FD_LOCK_MINUTES = 120; // Front Desk auto-lock duration (minutes)
 
 export const COACHES = [
-  { id: "SE", name: "Santiago Espinoza" },
-  { id: "NC", name: "Nicolas Cavero" },
+  { id: "TMiznwW3c_E9-NTW", name: "Santiago Espinoza", ini: "SE" },
+  { id: "TMa5N23NEiU89Spy", name: "Nicolas Cavero",    ini: "NC" },
 ];
 
 /* ─── Time slots ─── */

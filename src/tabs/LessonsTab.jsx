@@ -6,8 +6,8 @@ import { GREEN, PURPLE, ORANGE, RED, mono, ff, cn, X, S, GS, TC, TN, dateKey } f
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const COACHES = [
-  { id: "SE", n: "Santiago Espinoza" },
-  { id: "NC", n: "Nicolas Cavero"    },
+  { id: "TMiznwW3c_E9-NTW", n: "Santiago Espinoza", ini: "SE" },
+  { id: "TMa5N23NEiU89Spy", n: "Nicolas Cavero",    ini: "NC" },
 ];
 
 const PACKAGES = [
@@ -236,18 +236,20 @@ export default function LessonsTab({ customers }) {
         coach_id:           sellCoach,
         hours:              sellPkg.credits,
         is_member:          isMem,
+        source_name:        "BGS Admin App",
       });
       sqPaymentId = chargeRes?.payment?.id || null;
       if (!sqPaymentId) { alert("Payment failed. Please try again."); setSellSaving(false); return; }
     }
 
-    const coachName = COACHES.find(c => c.id === sellCoach)?.n;
+    const coachObj  = COACHES.find(c => c.id === sellCoach);
+    const coachName = coachObj?.n || "";
     await db.post("lesson_packages", {
       customer_id:       sellCust.id,
       name:              sellPkg.name,
       total_credits:     sellPkg.credits,
       remaining_credits: sellPkg.credits,
-      coach_id:          sellCoach,
+      coach_id:          sellCoach,   // UUID — matches booking app format
       coach_name:        coachName,
       price,
       expiry_date:       dateKey(expDate),
