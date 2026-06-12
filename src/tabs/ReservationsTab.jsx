@@ -170,26 +170,34 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const TAX_RATE = 0.07;
     const d = new Date(date + "T12:00:00");
     const isWk = d.getDay() === 0 || d.getDay() === 6;
-    const hour = toH(time);
-    const isPk = !isWk && hour >= 17;
-    const rate = isPk ? cfg.pk : cfg.op;
-    const hrs = durSlots * 0.5;
-    const subtotal = Math.round(hrs * rate * 100) / 100;
+    const startHour = toH(time);
+    // Calculate per-slot (30min) pricing — each slot priced at its own rate
+    let subtotal = 0;
+    for (let i = 0; i < durSlots; i++) {
+      const slotHour = startHour + i * 0.5;
+      const isPk = !isWk && slotHour >= 17;
+      subtotal += (isPk ? cfg.pk : cfg.op) * 0.5;
+    }
+    subtotal = Math.round(subtotal * 100) / 100;
     const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
-    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
+    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax };
   };
 
   const calcBayTotal = (durSlots, time, date) => {
     const TAX_RATE = 0.07;
     const d = new Date(date + "T12:00:00");
     const isWk = d.getDay() === 0 || d.getDay() === 6;
-    const hour = toH(time);
-    const isPk = !isWk && hour >= 17;
-    const rate = isPk ? cfg.pk : cfg.op;
-    const hrs = durSlots * 0.5;
-    const subtotal = Math.round(hrs * rate * 100) / 100;
+    const startHour = toH(time);
+    // Calculate per-slot (30min) pricing — each slot priced at its own rate
+    let subtotal = 0;
+    for (let i = 0; i < durSlots; i++) {
+      const slotHour = startHour + i * 0.5;
+      const isPk = !isWk && slotHour >= 17;
+      subtotal += (isPk ? cfg.pk : cfg.op) * 0.5;
+    }
+    subtotal = Math.round(subtotal * 100) / 100;
     const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
-    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
+    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax };
   };
 
   /* ── open new booking from grid click ── */
@@ -937,17 +945,24 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                     );
                   }
 
-                  const durSlots = DUR_MAP[selB.dur] || 2;
-                  const hrs      = durSlots * 0.5;
-                  const d        = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-                  const isWk     = d.getDay() === 0 || d.getDay() === 6;
-                  const hour     = toH(selB.time || "9:00 AM");
-                  const isPeak   = !isWk && hour >= 17;
-                  const rate     = isPeak ? cfg.pk : cfg.op;
-                  const paidHrs  = creditInfo ? creditInfo.remain : hrs;
-                  const subtotal = Math.round(paidHrs * rate * 100) / 100;
-                  const taxAmt   = Math.round(subtotal * TAX_RATE * 100) / 100;
-                  const total    = Math.round((subtotal + taxAmt) * 100) / 100;
+                  const durSlots  = DUR_MAP[selB.dur] || 2;
+                  const hrs       = durSlots * 0.5;
+                  const d         = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+                  const isWk      = d.getDay() === 0 || d.getDay() === 6;
+                  const startHour = toH(selB.time || "9:00 AM");
+                  const paidSlots = creditInfo ? Math.ceil(creditInfo.remain * 2) : durSlots;
+                  const paidHrs   = paidSlots * 0.5;
+                  // Per-slot pricing starting from the non-credited slots
+                  const creditSlots = durSlots - paidSlots;
+                  let subtotal = 0;
+                  for (let i = creditSlots; i < durSlots; i++) {
+                    const slotHour = startHour + i * 0.5;
+                    const isPeak = !isWk && slotHour >= 17;
+                    subtotal += (isPeak ? cfg.pk : cfg.op) * 0.5;
+                  }
+                  subtotal = Math.round(subtotal * 100) / 100;
+                  const taxAmt = Math.round(subtotal * TAX_RATE * 100) / 100;
+                  const total  = Math.round((subtotal + taxAmt) * 100) / 100;
                   return (
                     <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
                       {creditInfo && creditInfo.used > 0 && (
