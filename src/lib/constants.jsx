@@ -35,7 +35,7 @@ export const TEAM = [];
 export const FD_LOCK_MINUTES = 120; // Front Desk auto-lock duration (minutes)
 
 export const COACHES = [
-  { id: "TMiznwW3c_E9-NTW", name: "Santiago Espinoza", ini: "SE" },
+  { id: "TMiznwW3c_E9-NTW", name: "Santiago Espinosa", ini: "SE" },
   { id: "TMa5N23NEiU89Spy", name: "Nicolas Cavero",    ini: "NC" },
 ];
 

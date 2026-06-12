@@ -227,7 +227,7 @@ export default function ReportsTab({ bookings, customers }) {
   /* ══════════════════ LESSONS ══════════════════ */
   // Per-coach lesson stats
   const coachLessonStats = (() => {
-    const coaches = ["Santiago Espinoza", "Nicolas Cavero"];
+    const coaches = ["Santiago Espinosa", "Nicolas Cavero"];
     return coaches.map(coach => {
       const coachPkgs    = lessonPkgs.filter(p => p.coach_name === coach);
       const pkgs3hr      = coachPkgs.filter(p => p.total_credits === 3);

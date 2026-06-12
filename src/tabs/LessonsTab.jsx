@@ -6,7 +6,7 @@ import { GREEN, PURPLE, ORANGE, RED, mono, ff, cn, X, S, GS, TC, TN, dateKey } f
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const COACHES = [
-  { id: "TMiznwW3c_E9-NTW", n: "Santiago Espinoza", ini: "SE" },
+  { id: "TMiznwW3c_E9-NTW", n: "Santiago Espinosa", ini: "SE" },
   { id: "TMa5N23NEiU89Spy", n: "Nicolas Cavero",    ini: "NC" },
 ];
 
@@ -331,7 +331,7 @@ export default function LessonsTab({ customers }) {
         const enrichedLessons = d.lessons.map(l => {
           if (!l.credits_used || l.credits_used === 0) return { ...l, _type: "lesson", _date: l.date || "" };
           const matchPkg = d.packages.find(p =>
-            p.coach_id === (l.coach_name?.includes("Espinoza") ? "SE" : "NC") &&
+            p.coach_id === (l.coach_name?.includes("Espinosa") ? "SE" : "NC") &&
             (!p.purchase_date || p.purchase_date <= l.date) &&
             (!p.expiry_date   || p.expiry_date   >= l.date)
           ) || d.packages.find(p => p.coach_name === l.coach_name);
