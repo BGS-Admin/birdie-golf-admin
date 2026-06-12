@@ -23,7 +23,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const [custSearch,setCustSearch]= useState("");
   const [custCards, setCustCards] = useState([]);     // payment methods for selected customer
   const [loadingCards, setLoadingCards] = useState(false);
-  const [lessonPkg,   setLessonPkg]   = useState(null); // active lesson package credit for selected coach
   const [refundModal, setRefundModal] = useState(null);
   const [saving,    setSaving]    = useState(false);
   const [resView,   setResView]   = useState("calendar");
@@ -36,7 +35,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     setSelB(null);
     setCustSearch("");
     setCustCards([]);
-    setLessonPkg(null);
     setRefundModal(null);
   }, []);
 
@@ -74,16 +72,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const cards = await db.get("payment_methods", `customer_id=eq.${custId}&select=*&order=is_default.desc`);
     setCustCards(cards || []);
     setLoadingCards(false);
-  }, []);
-
-  /* ── load lesson package credit for a customer + coach ── */
-  const loadLessonPkg = useCallback(async (custId, coachName) => {
-    if (!custId || !coachName) { setLessonPkg(null); return; }
-    const coachId = coachName.includes("Espinoza") ? "SE" : "NC";
-    const pkgs = await db.get("lesson_packages",
-      `customer_id=eq.${custId}&coach_id=eq.${coachId}&status=eq.active&remaining_credits=gt.0&select=*&order=expiry_date.asc&limit=1`
-    );
-    setLessonPkg(pkgs?.[0] || null);
   }, []);
 
   /* ── grid helpers ── */
@@ -212,65 +200,27 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const creditsUsed = creditInfo ? creditInfo.used : 0;
 
     // Calculate charge amount
-    const TAX_RATE  = 0.07;
-    const isLesson2 = selB.type === "lesson";
-    const hrs       = durSlots * 0.5;
-    const d         = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-    const isWk      = d.getDay() === 0 || d.getDay() === 6;
-    const hour      = toH(selB.time || "9:00 AM");
-    const isPeak    = !isWk && hour >= 17;
-    const rate      = isPeak ? cfg.pk : cfg.op;
-    const paidHrs   = creditInfo ? creditInfo.remain : hrs;
-    // Lessons: not taxable. Bays: Square applies 7% via catalog.
-    const usingLessonCredit = isLesson2 && lessonPkg && lessonPkg.remaining_credits > 0;
-    const subtotal  = usingLessonCredit ? 0 : (selB.cardId && selB.cardId !== "in_person" ? Math.round(paidHrs * rate * 100) / 100 : 0);
-    const taxAmt    = isLesson2 ? 0 : Math.round(subtotal * TAX_RATE * 100) / 100;
-    const amount    = Math.round((subtotal + taxAmt) * 100) / 100;
+    const hrs    = durSlots * 0.5;
+    const d      = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+    const isWk   = d.getDay() === 0 || d.getDay() === 6;
+    const hour   = toH(selB.time || "9:00 AM");
+    const isPeak = !isWk && hour >= 17;
+    const rate   = isPeak ? cfg.pk : cfg.op;
+    const paidHrs = creditInfo ? creditInfo.remain : hrs;
+    let amount   = selB.cardId && selB.cardId !== "in_person" ? paidHrs * rate : 0;
 
-    // Charge via Square catalog (bay.charge or lesson.purchase)
+    // Charge card if applicable
     let sqPaymentId = null;
-    const isLesson     = selB.type === "lesson";
-    const hasLessonPkg = isLesson && lessonPkg && lessonPkg.remaining_credits > 0;
-
-    if (isLesson && hasLessonPkg && custObj?.square_customer_id) {
-      // $0 credit lesson — create $0 order for Square tracking
-      const coachName = selB.coach_name || "";
-      const orderRes = await sq("order.create", {
-        square_customer_id: custObj.square_customer_id,
-        apply_tax: false,
-        line_items: [{
-          name: `Lesson Credit · ${coachName}`,
-          quantity: "1",
-          base_price_money: { amount: 0, currency: "USD" },
-        }],
-      });
-      sqPaymentId = orderRes?.order?.id || null;
-    } else if (subtotal > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
+    if (amount > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
       const sqCard = custCards.find(c => c.id === selB.cardId);
       if (sqCard?.square_card_id) {
-        if (isLesson) {
-          // lesson.purchase — catalog item per coach + member status, no tax
-          const isMember = !!(custObj?.tier && custObj.tier !== "none");
-          const coachId  = selB.coach_name?.includes("Espinoza") ? "SE" : "NC";
-          const chargeRes = await sq("lesson.purchase", {
-            square_customer_id: custObj.square_customer_id,
-            card_id: sqCard.square_card_id,
-            coach_id: coachId,
-            hours: 1,
-            is_member: isMember,
-          });
-          sqPaymentId = chargeRes?.payment?.id || null;
-        } else {
-          // bay.charge — catalog + 7% tax via Square
-          const chargeRes = await sq("bay.charge", {
-            square_customer_id: custObj.square_customer_id,
-            card_id: sqCard.square_card_id,
-            slots: durSlots,
-            is_peak: isPeak,
-            note: `Bay ${selB.bay} · ${selB.date || dateKey(resDate)} · ${paidHrs}hr`,
-          });
-          sqPaymentId = chargeRes?.payment?.id || null;
-        }
+        const payment = await sq("payment.create", {
+          square_customer_id: custObj.square_customer_id,
+          card_id: sqCard.square_card_id,
+          amount,
+          note: `Bay ${selB.bay} \u00b7 ${selB.date || dateKey(resDate)}`,
+        });
+        sqPaymentId = payment?.payment?.id || null;
       }
     }
 
@@ -284,27 +234,17 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       duration_slots:    durSlots,
       status:            "confirmed",
       amount,
-      credits_used:      hasLessonPkg ? 1 : creditsUsed,
+      credits_used:      creditsUsed,
       discount:          0,
       coach_name:        selB.type === "lesson" ? (selB.coach_name || "") : "",
       admin_notes:       selB.notes || "",
       square_payment_id: sqPaymentId,
     });
 
-    // Deduct bay credits
+    // Deduct credits
     if (creditsUsed > 0 && custObj?.id) {
       const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
       await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
-    }
-    // Deduct lesson package credit
-    if (hasLessonPkg && lessonPkg?.id) {
-      const newRemaining = Math.max(0, lessonPkg.remaining_credits - 1);
-      const newStatus    = newRemaining === 0 ? "exhausted" : "active";
-      await db.patch("lesson_packages", `id=eq.${lessonPkg.id}`, {
-        remaining_credits: newRemaining,
-        status: newStatus,
-      });
-      setLessonPkg(null);
     }
 
     // Transaction record
@@ -326,32 +266,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       const custName = custObj ? ((custObj.first_name||"")+" "+(custObj.last_name||"")).trim() : "Walk-in";
       await logBkChange(bk.id, "Created", custName + " · Bay " + bk.bay + " · " + bk.start_time);
     }
-    // Send confirmation email (same as booking app flow)
-    if (custObj?.email) {
-      const bkDate   = selB.date || dateKey(resDate);
-      const durLabel = (durSlots * 0.5) + "hr" + (durSlots > 2 ? "s" : "");
-      const fmtDate  = new Date(bkDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
-      const emailData = {
-        customer_name:  ((custObj.first_name || "") + " " + (custObj.last_name || "")).trim(),
-        customer_email: custObj.email,
-        date:           fmtDate,
-        time:           selB.time || "9:00 AM",
-        duration:       durLabel,
-        bay:            "Bay " + (selB.bay || 1),
-        total:          "$" + amount.toFixed(2),
-        credits_used:   hasLessonPkg ? "1 lesson credit" : (creditsUsed > 0 ? creditsUsed + " hr credit" + (creditsUsed > 1 ? "s" : "") : null),
-        type:           selB.type === "lesson" ? "lesson_booking" : "bay_booking",
-        coach:          selB.coach_name || undefined,
-        payment_method: selB.cardId === "in_person" ? "In Person" : "Card on file",
-        send_admin:     true,
-      };
-      sq("email.send", {
-        customer_email: custObj.email,
-        type:           emailData.type,
-        ...emailData,
-      }).catch(e => console.error("Email failed:", e));
-    }
-
     fire("Booking created ✓");
     setSaving(false);
     closeModal();
@@ -359,21 +273,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   };
 
   /* ── save existing booking edits ── */
-  const [priceChangeModal, setPriceChangeModal] = React.useState(null);
-
-  const calcBayTotal = (durSlots, time, date) => {
-    const TAX_RATE = 0.07;
-    const d = new Date(date + "T12:00:00");
-    const isWk = d.getDay() === 0 || d.getDay() === 6;
-    const hour = toH(time);
-    const isPk = !isWk && hour >= 17;
-    const rate = isPk ? cfg.pk : cfg.op;
-    const hrs = durSlots * 0.5;
-    const subtotal = Math.round(hrs * rate * 100) / 100;
-    const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
-    return { total: Math.round((subtotal + tax) * 100) / 100, subtotal, tax, rate, isPk, hrs };
-  };
-
   const saveEdits = async () => {
     setSaving(true);
     const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
@@ -407,37 +306,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     }
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
 
-    // Price change detection — only for paid bay bookings with a customer card on file
-    const isPaidBay = selB.type !== "lesson" && selB.square_payment_id && selB.custObj && !selB.isWalkIn;
-    if (isPaidBay && orig) {
-      const origCalc = calcBayTotal(orig.duration_slots || 2, orig.start_time, orig.date || newDate);
-      const newCalc  = calcBayTotal(durSlots, newTime, newDate);
-      const origPaid = orig.amount || 0;
-      const diff     = Math.round((newCalc.total - origPaid) * 100) / 100;
-      if (Math.abs(diff) >= 0.01) {
-        // For refunds (shorter booking): only offer refund if 24h+ before start
-        const startDt = new Date((newDate || orig.date) + "T" + (() => {
-          const [t, m] = (newTime || orig.start_time).split(" ");
-          let [h, mn] = t.split(":").map(Number);
-          if (m === "PM" && h !== 12) h += 12;
-          if (m === "AM" && h === 12) h = 0;
-          return String(h).padStart(2,"0") + ":" + String(mn).padStart(2,"0") + ":00-04:00";
-        })());
-        const hoursUntilStart = (startDt - new Date()) / 3600000;
-        const refundEligible = diff < 0 && hoursUntilStart >= 24;
-        const showDiff = diff > 0 || refundEligible;
-        if (showDiff) {
-          setSaving(false);
-          setPriceChangeModal({ diff, newTotal: newCalc.total, origPaid, newCalc, custName, durSlots, newBay, newTime, newDate, changes, custObj: selB.custObj, refundEligible });
-          return;
-        }
-        // Shorter booking within 24h — save without refund
-        if (diff < 0 && !refundEligible) {
-          // fall through to save without refund prompt
-        }
-      }
-    }
-
     await db.patch("bookings", `id=eq.${selB.id}`, {
       status:         selB.status,
       bay:            newBay,
@@ -458,43 +326,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
     await logBkChange(selB.id, "Cancelled", custName + " · Bay " + selB.bay + " · " + (selB.start_time||selB.time));
-    // Record cancellation in transaction history
-    if (selB.customer_id || selB.custObj?.id) {
-      const bkType = selB.type === "lesson" ? "Lesson" : `Bay ${selB.bay}`;
-      const bkDate = selB.date || "";
-      const bkTime = selB.start_time || selB.time || "";
-      const isPaid = !!(selB.square_payment_id && selB.amount > 0);
-      await db.post("transactions", {
-        customer_id: selB.customer_id || selB.custObj?.id,
-        description: `Cancellation · ${bkType} · ${bkDate} · ${bkTime} — ${isPaid ? `$${Number(selB.amount).toFixed(2)} paid — refund pending review` : "Not paid — no refund"} · Cancelled by staff`,
-        date: dateKey(new Date()),
-        amount: 0,
-        payment_label: "Admin",
-      });
-    }
-
-    // Send cancellation email to customer and BCC to info@
-    const bkType = selB.type || "bay";
-    const emailPayload = {
-      type: "cancellation_booking",
-      customer_name: custName,
-      customer_email: selB.custObj?.email || null,
-      bcc_email: "info@birdiegolfstudios.com",
-      booking_type: bkType,
-      bay: selB.bay,
-      date: selB.date,
-      time: selB.start_time || selB.time,
-      duration: ((selB.duration_slots || 2) * 0.5) + "hr",
-      coach: selB.coach_name || null,
-      amount: selB.amount || 0,
-    };
-    if (selB.custObj?.email) {
-      sq("email.send", emailPayload).catch(e => console.error("Cancel email failed:", e));
-    }
-    // Always notify staff
-    sq("email.send", { ...emailPayload, customer_email: "info@birdiegolfstudios.com", bcc_email: null })
-      .catch(e => console.error("Staff cancel email failed:", e));
-
     fire("Booking cancelled");
     setSaving(false);
     closeModal();
@@ -514,7 +345,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: newCredits });
       await db.post("transactions", {
         customer_id:  cust.id,
-        description:  `Cancellation · Bay ${bk.bay} · ${bk.date || ""} · ${bk.start_time || ""} — ${creditsBack}hr credit refund · Cancelled by staff`,
+        description:  `Refund (credits) \u00b7 Bay ${bk.bay}`,
         date:         dateKey(new Date()),
         amount:       creditsBack,
         payment_label: "Credits",
@@ -528,7 +359,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       });
       await db.post("transactions", {
         customer_id:  bk.customer_id,
-        description:  `Cancellation · Bay ${bk.bay} · ${bk.date || ""} · ${bk.start_time || ""} — $${Number(bk.amount||0).toFixed(2)} refunded to card · Cancelled by staff`,
+        description:  `Refund \u00b7 Bay ${bk.bay}`,
         date:         dateKey(new Date()),
         amount:       -(bk.amount || 0),
         payment_label: "Refund",
@@ -565,7 +396,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
           <button style={S.navArr} onClick={() => setResDate(addDays(resDate, 1))}>{X.chevR(18)}</button>
           <button style={{ ...S.navArr, fontSize: 11, width: "auto", padding: "0 12px" }} onClick={() => setResDate(new Date())}>Today</button>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* View toggle */}
+          <div style={{ display: "flex", background: "#f0f0ee", borderRadius: 8, padding: 3, gap: 3 }}>
+            <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "calendar" ? "#fff" : "transparent", color: resView === "calendar" ? "#1a1a1a" : "#888", boxShadow: resView === "calendar" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => setResView("calendar")}>Calendar</button>
+            <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "changes" ? "#fff" : "transparent", color: resView === "changes" ? "#1a1a1a" : "#888", boxShadow: resView === "changes" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => { setResView("changes"); loadChangeLog(); }}>Changes & Cancellations</button>
+          </div>
           <button
             style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }}
             onClick={reload}
@@ -579,12 +415,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
             {X.plus(14)} New Booking
           </button>
         </div>
-      </div>
-
-      {/* ── View toggle ── */}
-      <div style={{ display: "flex", gap: 3, background: "#f0f0ee", borderRadius: 8, padding: 3, marginBottom: 14, alignSelf: "flex-start" }}>
-        <button style={{ padding: "6px 16px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "calendar" ? "#fff" : "transparent", color: resView === "calendar" ? "#1a1a1a" : "#888", boxShadow: resView === "calendar" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => setResView("calendar")}>Calendar</button>
-        <button style={{ padding: "6px 16px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "changes" ? "#fff" : "transparent", color: resView === "changes" ? "#1a1a1a" : "#888", boxShadow: resView === "changes" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => { setResView("changes"); loadChangeLog(); }}>Changes & Cancellations</button>
       </div>
 
       {resView === "calendar" && (
@@ -643,7 +473,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                           {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
                           <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
                           {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
-                          {(!bk.square_payment_id || !bk.amount) && bk.amount !== 0 && bk.customer_id && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: RED, padding: "1px 4px", borderRadius: 3 }}>NOT PAID</span>}
                         </div>
                       </div>
                     </div>
@@ -709,7 +538,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                                 setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null, isWalkIn: false }));
                                 setCustSearch("");
                                 loadCards(c.id);
-                                setLessonPkg(null); // reset — will reload when coach picked
                               }}
                             >
                               <span style={{ fontWeight: 600 }}>{cn(c)}</span>
@@ -850,34 +678,15 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               <div>
                 <label style={GS.label}>BAY</label>
                 <div style={{ display: "flex", gap: 3 }}>
-                  {[1, 2, 3, 4, 5].map(b => {
-                    const editDate  = selB.date || dateKey(resDate);
-                    const editTime  = selB.time || selB.start_time;
-                    const editSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
-                    const eStart    = editTime ? toH(editTime) : null;
-                    const eEnd      = eStart !== null ? eStart + editSlots * 0.5 : null;
-                    const isTaken   = eStart !== null && b !== selB.bay && bookings.some(bk =>
-                      bk.id !== selB.id && bk.bay === b && bk.date === editDate &&
-                      bk.status !== "cancelled" &&
-                      toH(bk.start_time) < eEnd && (toH(bk.start_time) + (bk.duration_slots || 2) * 0.5) > eStart
-                    );
-                    const isSel = selB.bay === b;
-                    return (
-                      <button
-                        key={b}
-                        disabled={isTaken}
-                        title={isTaken ? `Bay ${b} is already booked during this time` : ""}
-                        style={{
-                          ...GS.togBtn, flex: 1, padding: "7px 4px",
-                          ...(isSel  ? { background: GREEN, color: "#fff", borderColor: GREEN } :
-                              isTaken ? { background: "#fef2f2", color: "#E03928", borderColor: "#fecaca", cursor: "not-allowed", opacity: 0.7 } : {})
-                        }}
-                        onClick={() => { if (!isTaken) setSelB(p => ({ ...p, bay: b })); }}
-                      >
-                        {b}{isTaken ? " ✕" : ""}
-                      </button>
-                    );
-                  })}
+                  {[1, 2, 3, 4, 5].map(b => (
+                    <button
+                      key={b}
+                      style={{ ...GS.togBtn, flex: 1, padding: "7px 4px", ...(selB.bay === b ? { background: GREEN, color: "#fff" } : {}) }}
+                      onClick={() => setSelB(p => ({ ...p, bay: b }))}
+                    >
+                      {b}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
@@ -902,25 +711,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               </div>
             </div>
 
-            {/* ── Price change warning (bay bookings with a customer) ── */}
-            {selB.custObj && !selB.isWalkIn && (selB.type || "bay") !== "lesson" && !selB.isNew && (() => {
-              const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
-              const newCalc  = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
-              const alreadyPaid = selB.square_payment_id ? (selB.amount || 0) : 0;
-              const diff     = Math.round((newCalc.total - alreadyPaid) * 100) / 100;
-              if (Math.abs(diff) < 0.01) return null;
-              return (
-                <div style={{ background: diff > 0 ? "#FFF5E5" : "#f0fdf4", border: `1px solid ${diff > 0 ? "#E8890C44" : "#bbf7d0"}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
-                  <p style={{ fontSize: 12, fontWeight: 700, color: diff > 0 ? "#E8890C" : GREEN, margin: "0 0 4px" }}>
-                    {diff > 0 ? `⚠ ${alreadyPaid > 0 ? "Additional charge" : "Charge"} of $${diff.toFixed(2)} will apply` : `↩ Refund of $${Math.abs(diff).toFixed(2)} may apply`}
-                  </p>
-                  <p style={{ fontSize: 11, color: "#888", margin: 0 }}>
-                    {alreadyPaid > 0 ? `Original: $${alreadyPaid.toFixed(2)} → New: $${newCalc.total.toFixed(2)}` : `Total due: $${newCalc.total.toFixed(2)}`} · {diff > 0 ? "Notify the customer before saving." : "Consider issuing a refund after saving."}
-                  </p>
-                </div>
-              );
-            })()}
-
             {/* ── Coach (lesson only) ── */}
             {(selB.type || "bay") === "lesson" && (
               <div style={{ marginBottom: 12 }}>
@@ -930,7 +720,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                     <button
                       key={c}
                       style={{ ...GS.togBtn, flex: 1, ...((selB.coach_name) === c ? { background: PURPLE, color: "#fff" } : {}) }}
-                      onClick={() => { setSelB(p => ({ ...p, coach_name: c })); loadLessonPkg(selB?.custId, c); }}
+                      onClick={() => setSelB(p => ({ ...p, coach_name: c }))}
                     >
                       {c.split(" ")[0]}
                     </button>
@@ -940,25 +730,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
             )}
 
             {/* ── Payment / Credits (when customer is selected) ── */}
-            {(selB.custObj && !selB.isWalkIn) && (selB.square_payment_id && selB.amount > 0 ? (
-              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: GREEN }}>✓ Paid ${Number(selB.amount || 0).toFixed(2)}</span>
-                <span style={{ fontSize: 11, color: "#888", marginLeft: "auto" }}>via {selB.custObj?.first_name || "customer"}'s card on file</span>
-              </div>
-            ) : !selB.isNew && (
-              <div style={{ background: "#fafaf8", border: "1px solid #e8e8e6", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: RED }}>● Not paid</span>
-                <button style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: GREEN, background: GREEN + "14", border: `1px solid ${GREEN}44`, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: ff }} onClick={async () => {
-                  const durSlots = DUR_MAP[selB.dur] || selB.duration_slots || 2;
-                  const calc = calcBayTotal(durSlots, selB.time || selB.start_time, selB.date || dateKey(resDate));
-                  await db.patch("bookings", `id=eq.${selB.id}`, { square_payment_id: "POS_PAID", amount: calc.total });
-                  await logBkChange(selB.id, "Marked as Paid", `$${calc.total.toFixed(2)} via Square POS`);
-                  fire("Marked as paid ✓");
-                  setSelB(p => ({ ...p, square_payment_id: "POS_PAID", amount: calc.total }));
-                  reload();
-                }}>Mark as Paid (Square POS)</button>
-              </div>
-            ) || (
+            {(selB.custObj && !selB.isWalkIn) && (
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
@@ -1003,74 +775,24 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
 
                 {/* Amount preview */}
                 {selB.cardId && selB.cardId !== "in_person" && (() => {
-                  const TAX_RATE  = 0.07;
-                  const isLes     = (selB.type || "bay") === "lesson";
-
-                  if (isLes) {
-                    // Check for lesson package credit
-                    if (lessonPkg && lessonPkg.remaining_credits > 0) {
-                      return (
-                        <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>1 lesson credit applied</span>
-                            <span style={{ fontSize: 12, color: "#888" }}>{lessonPkg.remaining_credits} remaining</span>
-                          </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
-                            <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
-                            <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: GREEN }}>$0.00</span>
-                          </div>
-                        </div>
-                      );
-                    }
-                    // No credit — show member/non-member rate
-                    const isMem    = !!(selB.custObj?.tier && selB.custObj.tier !== "none");
-                    const lesPrice = isMem ? 120 : 150;
-                    return (
-                      <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between" }}>
-                          <span style={{ fontSize: 12, color: "#888" }}>1hr Lesson · {isMem ? "Member rate" : "Non-member rate"}</span>
-                          <span style={{ fontSize: 12, color: "#888" }}>${lesPrice}.00</span>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
-                          <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
-                          <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${lesPrice}.00</span>
-                        </div>
-                        <p style={{ fontSize: 11, color: "#aaa" }}>Lessons are not subject to sales tax.</p>
-                      </div>
-                    );
-                  }
-
-                  // Bay pricing
-                  const durSlots  = DUR_MAP[selB.dur] || 2;
-                  const hrs       = durSlots * 0.5;
-                  const d         = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-                  const isWk      = d.getDay() === 0 || d.getDay() === 6;
-                  const hour      = toH(selB.time || "9:00 AM");
-                  const isPeak    = !isWk && hour >= 17;
-                  const rate      = isPeak ? cfg.pk : cfg.op;
-                  const paidHrs   = creditInfo ? creditInfo.remain : hrs;
-                  const subtotal  = Math.round(paidHrs * rate * 100) / 100;
-                  const taxAmt    = Math.round(subtotal * TAX_RATE * 100) / 100;
-                  const total     = Math.round((subtotal + taxAmt) * 100) / 100;
+                  const durSlots = DUR_MAP[selB.dur] || 2;
+                  const hrs = durSlots * 0.5;
+                  const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+                  const isWk = d.getDay() === 0 || d.getDay() === 6;
+                  const hour  = toH(selB.time || "9:00 AM");
+                  const isPeak = !isWk && hour >= 17;
+                  const rate  = isPeak ? cfg.pk : cfg.op;
+                  const paidHrs = creditInfo ? creditInfo.remain : hrs;
+                  const amount  = paidHrs * rate;
                   return (
-                    <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(non-peak)"}</span>
-                        <span style={{ fontSize: 12, color: "#888" }}>${subtotal.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ fontSize: 12, color: "#888" }}>Tax (7%)</span>
-                        <span style={{ fontSize: 12, color: "#888" }}>${taxAmt.toFixed(2)}</span>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
-                        <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
-                        <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${total.toFixed(2)}</span>
-                      </div>
+                    <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(non-peak)"}</span>
+                      <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${amount.toFixed(2)}</span>
                     </div>
                   );
                 })()}
               </div>
-            ))}
+            )}
 
             {/* ── Status (existing booking) ── */}
             {!selB.isNew && (
@@ -1157,84 +879,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       )}
 
       {/* ══════════════════════════════════════
-          PRICE CHANGE MODAL
-      ══════════════════════════════════════ */}
-      {priceChangeModal && (
-        <div style={S.ov} onClick={() => setPriceChangeModal(null)}>
-          <div style={{ ...S.mod, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Price Change Detected</h3>
-            <p style={{ fontSize: 13, color: "#888", marginBottom: 16 }}>
-              The changes you made affect the booking price.
-            </p>
-            <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: "#888" }}>Originally paid</span>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>${Number(priceChangeModal.origPaid).toFixed(2)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: "#888" }}>New total</span>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>${priceChangeModal.newTotal.toFixed(2)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #e8e8e6", paddingTop: 8, marginTop: 4 }}>
-                <span style={{ fontSize: 13, fontWeight: 700 }}>{priceChangeModal.diff > 0 ? "Amount to charge" : "Amount to refund"}</span>
-                <span style={{ fontSize: 15, fontWeight: 700, color: priceChangeModal.diff > 0 ? RED : GREEN }}>${Math.abs(priceChangeModal.diff).toFixed(2)}</span>
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {priceChangeModal.diff > 0 && (
-                <button style={{ ...S.b1, background: GREEN }} disabled={saving} onClick={async () => {
-                  setSaving(true);
-                  const card = custCards?.[0];
-                  const cust = priceChangeModal.custObj;
-                  if (card?.square_card_id && cust?.square_customer_id) {
-                    // Charge only the difference amount, not the full new total
-                    const chargeRes = await sq("payment.create", {
-                      square_customer_id: cust.square_customer_id,
-                      card_id: card.square_card_id,
-                      amount: priceChangeModal.diff,
-                      note: `Booking adjustment · Bay ${priceChangeModal.newBay} · ${priceChangeModal.newTime} · ${priceChangeModal.durSlots * 0.5}hr`,
-                    });
-                    if (!chargeRes?.payment?.id) { fire("Charge failed. Save changes without charging?"); setSaving(false); return; }
-                    await db.post("transactions", {
-                      customer_id: cust.id || selB.customer_id,
-                      description: `Booking Adjustment · Bay ${priceChangeModal.newBay} · ${priceChangeModal.newTime} — Additional $${priceChangeModal.diff.toFixed(2)} charged`,
-                      date: dateKey(new Date()), amount: priceChangeModal.diff, payment_label: `${card.brand} ···${card.last4}`,
-                      square_payment_id: chargeRes.payment.id,
-                    });
-                  }
-                  await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: priceChangeModal.newBay, start_time: priceChangeModal.newTime, duration_slots: priceChangeModal.durSlots, admin_notes: selB.notes || "", amount: priceChangeModal.newTotal });
-                  await logBkChange(selB.id, "Updated + Charged", priceChangeModal.custName + " · " + (priceChangeModal.changes.length ? priceChangeModal.changes.join(", ") : "Saved"));
-                  fire("Booking updated and additional charge applied ✓");
-                  setSaving(false); setPriceChangeModal(null); closeModal(); reload();
-                }}>Charge ${priceChangeModal.diff.toFixed(2)} and Save</button>
-              )}
-              {priceChangeModal.diff < 0 && (
-                priceChangeModal.refundEligible ? (
-                  <button style={{ ...S.b1, background: GREEN }} disabled={saving} onClick={async () => {
-                    setSaving(true);
-                    setRefundModal({ ...selB, amount: Math.abs(priceChangeModal.diff) });
-                    setPriceChangeModal(null); setSaving(false);
-                  }}>Issue ${Math.abs(priceChangeModal.diff).toFixed(2)} Refund</button>
-                ) : (
-                  <div style={{ padding: "10px 14px", background: "#FFF5E5", borderRadius: 10, fontSize: 12, color: "#E8890C" }}>
-                    Within 24h of start time — no refund applicable per cancellation policy.
-                  </div>
-                )
-              )}
-              <button style={{ ...GS.togBtn }} disabled={saving} onClick={async () => {
-                setSaving(true);
-                await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: priceChangeModal.newBay, start_time: priceChangeModal.newTime, duration_slots: priceChangeModal.durSlots, admin_notes: selB.notes || "" });
-                await logBkChange(selB.id, "Updated (no charge)", priceChangeModal.custName + " · " + (priceChangeModal.changes.length ? priceChangeModal.changes.join(", ") : "Saved"));
-                fire("Booking updated (no charge adjustment) ✓");
-                setSaving(false); setPriceChangeModal(null); closeModal(); reload();
-              }}>Save Without Charging</button>
-              <button style={{ ...GS.togBtn, color: RED }} onClick={() => setPriceChangeModal(null)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════
           REFUND MODAL
       ══════════════════════════════════════ */}
       {refundModal && (
@@ -1268,7 +912,9 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
-        </>
+    </div>
+  );
+}        </>
       )}
 
       {/* ── CHANGES & CANCELLATIONS VIEW ── */}
@@ -1340,6 +986,3 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
-    </div>
-  );
-}
