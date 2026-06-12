@@ -13,15 +13,15 @@ function calcAmount(durSlots, date, cfg) {
   const d = new Date(date + "T12:00:00");
   const isWk = d.getDay() === 0 || d.getDay() === 6;
   const hrs = durSlots * 0.5;
-  const rate = isWk ? cfg.wk : cfg.pk; // simplification; peak logic can be added
+  const rate = isWk ? cfg.wk : cfg.pk;
   return hrs * rate;
 }
 
 export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, hoursConfig, fire, reload, logActivity }) {
   const [resDate,   setResDate]   = useState(new Date());
-  const [selB,      setSelB]      = useState(null);   // booking modal state
+  const [selB,      setSelB]      = useState(null);
   const [custSearch,setCustSearch]= useState("");
-  const [custCards, setCustCards] = useState([]);     // payment methods for selected customer
+  const [custCards, setCustCards] = useState([]);
   const [loadingCards, setLoadingCards] = useState(false);
   const [refundModal, setRefundModal] = useState(null);
   const [saving,    setSaving]    = useState(false);
@@ -30,12 +30,16 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const [logLoading,setLogLoading]= useState(false);
   const [histModal, setHistModal] = useState(null);
   const [histLog,   setHistLog]   = useState([]);
+  const [sqSearch,  setSqSearch]  = useState({ loading: false, results: [], done: false });
+  const [lessonPkg, setLessonPkg] = useState(null);
 
   const closeModal = useCallback(() => {
     setSelB(null);
     setCustSearch("");
     setCustCards([]);
     setRefundModal(null);
+    setSqSearch({ loading: false, results: [], done: false });
+    setLessonPkg(null);
   }, []);
 
   /* ── booking change log helpers ── */
@@ -74,8 +78,51 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     setLoadingCards(false);
   }, []);
 
+  /* ── fetch lesson package for selected customer ── */
+  const loadLessonPkg = useCallback(async (custId) => {
+    const pkgs = await db.get("lesson_packages", `customer_id=eq.${custId}&remaining_credits=gt.0&order=created_at.desc&limit=1`);
+    setLessonPkg(pkgs?.[0] || null);
+  }, []);
+
+  /* ── search Square directory for customers not yet in the booking app ── */
+  const searchSquareDirectory = useCallback(async (query) => {
+    if (!query || query.length < 2) return;
+    setSqSearch({ loading: true, results: [], done: false });
+    const digits = query.replace(/\D/g, "");
+    const isPhone = digits.length >= 7;
+    const isEmail = query.includes("@");
+    const params = isPhone ? { phone: digits } : isEmail ? { email: query.trim() } : { text: query.trim() };
+    const res = await sq("customer.search", params);
+    const sqCustomers = res?.customers || [];
+    const existingSquareIds = new Set(customers.map(c => c.square_customer_id).filter(Boolean));
+    const newOnes = sqCustomers.filter(c => !existingSquareIds.has(c.id));
+    setSqSearch({ loading: false, results: newOnes, done: true });
+  }, [customers]);
+
+  /* ── import a Square customer into Supabase ── */
+  const importSquareCustomer = useCallback(async (sqCust) => {
+    const phone = (sqCust.phone_number || "").replace(/\D/g, "").replace(/^1/, "");
+    const newRows = await db.post("customers", {
+      first_name:         sqCust.given_name || "",
+      last_name:          sqCust.family_name || "",
+      phone,
+      email:              sqCust.email_address || "",
+      tier:               "none",
+      square_customer_id: sqCust.id,
+    });
+    const newCust = Array.isArray(newRows) ? newRows[0] : newRows;
+    if (newCust?.id) {
+      setSelB(p => ({ ...p, custId: newCust.id, custObj: { ...newCust, square_customer_id: sqCust.id }, isWalkIn: false }));
+      setCustSearch("");
+      setSqSearch({ loading: false, results: [], done: false });
+      loadCards(newCust.id);
+      loadLessonPkg(newCust.id);
+      reload();
+    }
+  }, [loadCards, loadLessonPkg, reload]);
+
   /* ── grid helpers ── */
-  const slots       = getSlots(resDate);
+  const slots       = getSlots(resDate, hoursConfig);
   const isToday     = dateKey(resDate) === dateKey(new Date());
   const dayBookings = bookings.filter(b => b.date === dateKey(resDate) && b.status !== "cancelled");
 
@@ -113,7 +160,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const getCreditInfo = (cust, durSlots) => {
     if (!cust || !cust.tier || cust.tier === "none" || cust.tier === "starter") return null;
     const avail = cust.bay_credits_remaining || 0;
-    const needed = durSlots * 0.5; // 0.5 credit per slot
+    const needed = durSlots * 0.5;
     const used   = Math.min(avail, needed);
     const remain = needed - used;
     return { avail, needed, used, remain };
@@ -135,6 +182,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     });
     setCustCards([]);
     setCustSearch("");
+    setSqSearch({ loading: false, results: [], done: false });
+    setLessonPkg(null);
   };
 
   /* ── open existing booking ── */
@@ -149,7 +198,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       notes: bk.admin_notes || "",
       cardId: null,
     });
-    if (cust) loadCards(cust.id);
+    if (cust) { loadCards(cust.id); loadLessonPkg(cust.id); }
     setCustSearch("");
   };
 
@@ -157,15 +206,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
   const createBooking = async () => {
     const isNew = selB.isWalkIn;
     const info  = selB.newCustInfo || {};
-
-    // Validate: need either existing customer or new customer with name+phone
     if (!selB.custId && !(isNew && info.firstName && info.phone)) return;
     setSaving(true);
 
     let custId  = selB.custId;
     let custObj = selB.custObj;
 
-    // ── Create new customer in Supabase + Square ──
     if (isNew && !custId) {
       const phone = (info.phone || "").replace(/\D/g, "");
       const newRows = await db.post("customers", {
@@ -179,7 +225,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       if (newCust?.id) {
         custId  = newCust.id;
         custObj = newCust;
-        // Create in Square too
         const sqResult = await sq("customer.create", {
           first_name: info.firstName,
           last_name:  info.lastName || "",
@@ -195,21 +240,20 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       }
     }
 
-    const durSlots   = DUR_MAP[selB.dur] || 2;
-    const creditInfo = custObj ? getCreditInfo(custObj, durSlots) : null;
+    const durSlots    = DUR_MAP[selB.dur] || 2;
+    const creditInfo  = custObj ? getCreditInfo(custObj, durSlots) : null;
     const creditsUsed = creditInfo ? creditInfo.used : 0;
+    const hasLessonPkg = !!(lessonPkg && lessonPkg.remaining_credits > 0 && (selB.type || "bay") === "lesson");
 
-    // Calculate charge amount
-    const hrs    = durSlots * 0.5;
-    const d      = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-    const isWk   = d.getDay() === 0 || d.getDay() === 6;
-    const hour   = toH(selB.time || "9:00 AM");
-    const isPeak = !isWk && hour >= 17;
-    const rate   = isPeak ? cfg.pk : cfg.op;
+    const hrs     = durSlots * 0.5;
+    const d       = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+    const isWk    = d.getDay() === 0 || d.getDay() === 6;
+    const hour    = toH(selB.time || "9:00 AM");
+    const isPeak  = !isWk && hour >= 17;
+    const rate    = isPeak ? cfg.pk : cfg.op;
     const paidHrs = creditInfo ? creditInfo.remain : hrs;
-    let amount   = selB.cardId && selB.cardId !== "in_person" ? paidHrs * rate : 0;
+    let amount    = selB.cardId && selB.cardId !== "in_person" ? paidHrs * rate : 0;
 
-    // Charge card if applicable
     let sqPaymentId = null;
     if (amount > 0 && selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id) {
       const sqCard = custCards.find(c => c.id === selB.cardId);
@@ -224,7 +268,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       }
     }
 
-    // Write booking
     await db.post("bookings", {
       customer_id:       custId || null,
       type:              selB.type || "bay",
@@ -241,13 +284,11 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       square_payment_id: sqPaymentId,
     });
 
-    // Deduct credits
     if (creditsUsed > 0 && custObj?.id) {
       const newCredits = Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed);
       await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: newCredits });
     }
 
-    // Transaction record
     if (custId) {
       await db.post("transactions", {
         customer_id:       custId,
@@ -259,14 +300,50 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       });
     }
 
-    // Log creation — get the booking ID from the result
+    // Send confirmation email
+    if (custObj?.email) {
+      const fmtDate = new Date((selB.date || dateKey(resDate)) + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+      const durLabel = `${paidHrs}hr`;
+      const isMem = !!(custObj.tier && custObj.tier !== "none");
+      const isLes = (selB.type || "bay") === "lesson";
+      let emailTotal = "";
+      if (amount > 0) {
+        emailTotal = "$" + amount.toFixed(2);
+      } else if (hasLessonPkg) {
+        emailTotal = "";
+      } else if (creditsUsed > 0 && amount === 0) {
+        emailTotal = "";
+      } else {
+        const TAX = 0.07;
+        const sub = Math.round(paidHrs * rate * 100) / 100;
+        const tax = Math.round(sub * TAX * 100) / 100;
+        emailTotal = "$" + (sub + tax).toFixed(2);
+      }
+      const emailData = {
+        customer_name:  ((custObj.first_name || "") + " " + (custObj.last_name || "")).trim(),
+        customer_email: custObj.email,
+        date:           fmtDate,
+        time:           selB.time || "9:00 AM",
+        duration:       durLabel,
+        bay:            "Bay " + (selB.bay || 1),
+        total:          emailTotal || (selB.cardId === "in_person" ? "Pay in person" : "To be collected"),
+        credits_used:   hasLessonPkg ? "1 lesson credit" : (creditsUsed > 0 ? creditsUsed + " hr credit" + (creditsUsed !== 1 ? "s" : "") : null),
+        not_paid:       !sqPaymentId && !hasLessonPkg && !(creditsUsed > 0 && amount === 0),
+        type:           isLes ? "lesson_booking" : "bay_booking",
+        coach:          selB.coach_name || undefined,
+        payment_method: selB.cardId === "in_person" ? "In Person" : (sqPaymentId ? "Card on file" : "Pay in person"),
+        send_admin:     true,
+      };
+      await sq("email.send", emailData);
+    }
+
     const created = await db.get("bookings", "customer_id=eq." + (custId||"null") + "&order=created_at.desc&limit=1&select=id,bay,date,start_time,type");
     if (created?.[0]?.id) {
       const bk = created[0];
       const custName = custObj ? ((custObj.first_name||"")+" "+(custObj.last_name||"")).trim() : "Walk-in";
-      await logBkChange(bk.id, "Created", custName + " · Bay " + bk.bay + " · " + bk.start_time);
+      await logBkChange(bk.id, "Created", custName + " \u00b7 Bay " + bk.bay + " \u00b7 " + bk.start_time);
     }
-    fire("Booking created ✓");
+    fire("Booking created \u2713");
     setSaving(false);
     closeModal();
     reload();
@@ -282,7 +359,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const newStart = toH(newTime);
     const newEnd   = newStart + durSlots * 0.5;
 
-    // Block bay change if another booking overlaps on the target bay
     const conflict = bookings.find(b =>
       b.id !== selB.id && b.bay === newBay && b.date === newDate &&
       b.status !== "cancelled" &&
@@ -290,19 +366,18 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     );
     if (conflict) {
       const cc = customers.find(c => c.id === conflict.customer_id);
-      fire(`Bay ${newBay} is already booked at ${conflict.start_time}${cc ? " · " + ((cc.first_name||"")+" "+(cc.last_name||"")).trim() : ""}. Choose a different bay.`);
+      fire(`Bay ${newBay} is already booked at ${conflict.start_time}${cc ? " \u00b7 " + ((cc.first_name||"")+" "+(cc.last_name||"")).trim() : ""}. Choose a different bay.`);
       setSaving(false);
       return;
     }
 
-    // Build detailed change log
     const orig = bookings.find(b => b.id === selB.id);
     const changes = [];
     if (orig) {
-      if (orig.bay !== newBay) changes.push(`Bay ${orig.bay} → Bay ${newBay}`);
-      if (orig.start_time !== newTime) changes.push(`${orig.start_time} → ${newTime}`);
-      if ((orig.duration_slots||2) !== durSlots) changes.push(`${slotsToLabel(orig.duration_slots||2)} → ${slotsToLabel(durSlots)}`);
-      if (orig.status !== selB.status) changes.push(`Status: ${orig.status} → ${selB.status}`);
+      if (orig.bay !== newBay) changes.push(`Bay ${orig.bay} \u2192 Bay ${newBay}`);
+      if (orig.start_time !== newTime) changes.push(`${orig.start_time} \u2192 ${newTime}`);
+      if ((orig.duration_slots||2) !== durSlots) changes.push(`${slotsToLabel(orig.duration_slots||2)} \u2192 ${slotsToLabel(durSlots)}`);
+      if (orig.status !== selB.status) changes.push(`Status: ${orig.status} \u2192 ${selB.status}`);
     }
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
 
@@ -313,8 +388,8 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       duration_slots: durSlots,
       admin_notes:    selB.notes || "",
     });
-    await logBkChange(selB.id, "Updated", custName + " · " + (changes.length ? changes.join(", ") : "Saved"));
-    fire("Booking updated ✓");
+    await logBkChange(selB.id, "Updated", custName + " \u00b7 " + (changes.length ? changes.join(", ") : "Saved"));
+    fire("Booking updated \u2713");
     setSaving(false);
     closeModal();
     reload();
@@ -325,7 +400,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     setSaving(true);
     await db.patch("bookings", `id=eq.${selB.id}`, { status: "cancelled" });
     const custName = selB.custObj ? ((selB.custObj.first_name||"")+" "+(selB.custObj.last_name||"")).trim() : "Walk-in";
-    await logBkChange(selB.id, "Cancelled", custName + " · Bay " + selB.bay + " · " + (selB.start_time||selB.time));
+    await logBkChange(selB.id, "Cancelled", custName + " \u00b7 Bay " + selB.bay + " \u00b7 " + (selB.start_time||selB.time));
     fire("Booking cancelled");
     setSaving(false);
     closeModal();
@@ -397,23 +472,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
           <button style={{ ...S.navArr, fontSize: 11, width: "auto", padding: "0 12px" }} onClick={() => setResDate(new Date())}>Today</button>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {/* View toggle */}
           <div style={{ display: "flex", background: "#f0f0ee", borderRadius: 8, padding: 3, gap: 3 }}>
             <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "calendar" ? "#fff" : "transparent", color: resView === "calendar" ? "#1a1a1a" : "#888", boxShadow: resView === "calendar" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => setResView("calendar")}>Calendar</button>
             <button style={{ padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: ff, background: resView === "changes" ? "#fff" : "transparent", color: resView === "changes" ? "#1a1a1a" : "#888", boxShadow: resView === "changes" ? "0 1px 4px rgba(0,0,0,.08)" : "none" }} onClick={() => { setResView("changes"); loadChangeLog(); }}>Changes & Cancellations</button>
           </div>
-          <button
-            style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }}
-            onClick={reload}
-          >
-            ↻ Refresh
-          </button>
-          <button
-            style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }}
-            onClick={() => openNew(1, "9:00 AM")}
-          >
-            {X.plus(14)} New Booking
-          </button>
+          <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12, background: "#4A6FA5" }} onClick={reload}>&#8635; Refresh</button>
+          <button style={{ ...S.b1, width: "auto", padding: "8px 14px", fontSize: 12 }} onClick={() => openNew(1, "9:00 AM")}>{X.plus(14)} New Booking</button>
         </div>
       </div>
 
@@ -440,7 +504,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         {[1, 2, 3, 4, 5].map(b => <div key={b} style={GS.hdr}><span style={{ fontSize: 13, fontWeight: 700 }}>Bay {b}</span></div>)}
 
         {(() => {
-          // One rendered Set per bay — persists across all slot rows so each booking only draws once
           const renderedPerBay = { 1: new Set(), 2: new Set(), 3: new Set(), 4: new Set(), 5: new Set() };
           return slots.map(slot => (
             <React.Fragment key={slot}>
@@ -459,26 +522,27 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   const cust  = customers.find(c => c.id === bk.customer_id);
                   const name  = cust ? cn(cust) : "Walk-in";
                   const isMem = cust?.tier && cust.tier !== "none";
-                  const slotH = 29; // px per 30-min row
+                  const slotH = 29;
                   const h     = (bk.duration_slots || 2) * slotH - 2;
+                  const notPaid = (!bk.square_payment_id && bk.amount > 0 && bk.customer_id);
                   return (
                     <div key={bay} style={{ ...GS.cell, position: "relative" }}>
                       <div
-                        style={{ ...GS.booking, background: color + "20", borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
+                        style={{ ...GS.booking, background: color, borderLeft: `3px solid ${color}`, height: h, cursor: "pointer", zIndex: 3 }}
                         onClick={() => openExisting(bk)}
                       >
-                        <p style={{ fontSize: 10, fontWeight: 700, color, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
+                        <p style={{ fontSize: 10, fontWeight: 700, color: "#fff", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{name}</p>
                         <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 1 }}>
-                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: TC[cust.tier], padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
-                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: PURPLE, padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
-                          <span style={{ fontSize: 9, color: "#888" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
-                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: GREEN, background: GREEN + "18", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {isMem && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: "rgba(0,0,0,0.25)", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{TB[cust.tier]}</span>}
+                          {bk.type === "lesson" && bk.coach_name && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: "rgba(0,0,0,0.25)", padding: "1px 4px", borderRadius: 3, fontFamily: mono }}>{bk.coach_name.split(" ").map(w => w[0]).join("")}</span>}
+                          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.8)" }}>{(bk.duration_slots || 2) * 0.5}hr</span>
+                          {bk.credits_used > 0 && <span style={{ fontSize: 7, fontWeight: 700, color: "#fff", background: "rgba(0,0,0,0.2)", padding: "1px 4px", borderRadius: 3 }}>CR</span>}
+                          {notPaid && <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", background: RED, padding: "1px 4px", borderRadius: 3, letterSpacing: "0.3px" }}>NOT PAID</span>}
                         </div>
                       </div>
                     </div>
                   );
                 }
-                // Subsequent slots occupied by the same booking — render empty cell (block is drawn above)
                 if (bk && rendered.has(bkKey)) return <div key={bay} style={GS.cell} />;
                 if (blocked) return (
                   <div key={bay} style={{ ...GS.cell, background: RED + "10" }}>
@@ -516,17 +580,17 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               <div style={{ marginBottom: 14 }}>
                 <label style={GS.label}>CUSTOMER *</label>
 
-                {/* Mode: search existing / new customer */}
                 {!selB.isWalkIn && !selB.custObj && (
                   <>
                     <input
                       style={GS.input}
-                      placeholder="Search by name or phone..."
+                      placeholder="Search by name, phone, or email..."
                       value={custSearch}
-                      onChange={e => setCustSearch(e.target.value)}
+                      onChange={e => { setCustSearch(e.target.value); setSqSearch({ loading: false, results: [], done: false }); }}
                     />
                     {custSearch && (
-                      <div style={{ border: "1px solid #e8e8e6", borderRadius: 8, marginTop: 4, maxHeight: 160, overflowY: "auto" }}>
+                      <div style={{ border: "1px solid #e8e8e6", borderRadius: 8, marginTop: 4, maxHeight: 260, overflowY: "auto" }}>
+                        {/* App customers */}
                         {customers
                           .filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch))
                           .slice(0, 8)
@@ -538,6 +602,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                                 setSelB(p => ({ ...p, custId: c.id, custObj: c, cardId: null, isWalkIn: false }));
                                 setCustSearch("");
                                 loadCards(c.id);
+                                loadLessonPkg(c.id);
                               }}
                             >
                               <span style={{ fontWeight: 600 }}>{cn(c)}</span>
@@ -547,11 +612,40 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                               )}
                             </div>
                           ))}
-                        {/* "Not found" → offer to create new */}
                         {customers.filter(c => cn(c).toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch)).length === 0 && (
-                          <div style={{ padding: "10px 12px", fontSize: 12, color: "#aaa" }}>No customers found</div>
+                          <div style={{ padding: "8px 12px", fontSize: 12, color: "#aaa" }}>No customers found in app</div>
                         )}
-                        {/* Always show option to create new */}
+                        {/* Search Square directory */}
+                        <div
+                          style={{ padding: "10px 12px", fontSize: 12, cursor: "pointer", color: "#4A6FA5", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, borderTop: "1px solid #f2f2f0", background: "#f8fbff" }}
+                          onClick={() => searchSquareDirectory(custSearch)}
+                        >
+                          {X.search(13)} Search Square directory for unregistered customers
+                        </div>
+                        {sqSearch.loading && (
+                          <div style={{ padding: "8px 12px", fontSize: 12, color: "#aaa", fontStyle: "italic" }}>Searching Square...</div>
+                        )}
+                        {sqSearch.done && sqSearch.results.length === 0 && (
+                          <div style={{ padding: "8px 12px", fontSize: 12, color: "#aaa" }}>No unregistered customers found in Square</div>
+                        )}
+                        {sqSearch.results.map(sqC => (
+                          <div
+                            key={sqC.id}
+                            style={{ padding: "10px 12px", borderTop: "1px solid #f2f2f0", cursor: "pointer", background: "#f8f4ff" }}
+                            onClick={() => importSquareCustomer(sqC)}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                              <span style={{ fontSize: 13, fontWeight: 600 }}>{[sqC.given_name, sqC.family_name].filter(Boolean).join(" ") || "Unknown"}</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: "#4A6FA5", padding: "1px 5px", borderRadius: 3 }}>SQ</span>
+                              <span style={{ fontSize: 10, color: "#4A6FA5", fontWeight: 600, marginLeft: "auto" }}>+ Import & Select</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: "#888" }}>
+                              {sqC.phone_number && <span>{sqC.phone_number}</span>}
+                              {sqC.email_address && <span style={{ marginLeft: 8 }}>{sqC.email_address}</span>}
+                            </div>
+                          </div>
+                        ))}
+                        {/* Add new customer */}
                         <div
                           style={{ padding: "10px 12px", fontSize: 12, cursor: "pointer", color: GREEN, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, borderTop: "1px solid #f2f2f0" }}
                           onClick={() => { setSelB(p => ({ ...p, isWalkIn: true, newCustInfo: { firstName: "", lastName: "", phone: custSearch.replace(/\D/g,""), email: "", cardName: "", cardNumber: "", cardExp: "", cardCvc: "" } })); setCustSearch(""); }}
@@ -571,7 +665,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                       <span style={{ fontSize: 9, fontWeight: 700, color: "#fff", background: TC[selB.custObj.tier], padding: "2px 6px", borderRadius: 4, fontFamily: mono }}>{TB[selB.custObj.tier]}</span>
                     )}
                     <button style={{ marginLeft: "auto", fontSize: 11, color: "#888", background: "none", border: "none", cursor: "pointer" }}
-                      onClick={() => { setSelB(p => ({ ...p, custId: null, custObj: null, cardId: null })); setCustCards([]); }}>
+                      onClick={() => { setSelB(p => ({ ...p, custId: null, custObj: null, cardId: null })); setCustCards([]); setLessonPkg(null); }}>
                       Change
                     </button>
                   </div>
@@ -607,7 +701,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                         <input style={GS.input} placeholder="optional" value={selB.newCustInfo?.email || ""} onChange={e => setSelB(p => ({ ...p, newCustInfo: { ...p.newCustInfo, email: e.target.value } }))} />
                       </div>
                     </div>
-                    {/* Card info */}
                     <div style={{ borderTop: "1px solid #e8e8e6", paddingTop: 10, marginTop: 2 }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: "#555", display: "block", marginBottom: 8 }}>CARD ON FILE (optional — collect in person if not available)</span>
                       <div style={{ marginBottom: 8 }}>
@@ -734,18 +827,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               <div style={{ background: "#fafaf8", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <label style={GS.label}>PAYMENT</label>
 
-                {/* Credits banner */}
-                {creditInfo && creditInfo.used > 0 && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 10px", background: GREEN + "14", borderRadius: 8 }}>
-                    <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>
-                      {creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.avail} available)
-                    </span>
-                    {creditInfo.remain > 0 && (
-                      <span style={{ fontSize: 11, color: "#888" }}>· {creditInfo.remain}hr charged to card</span>
-                    )}
-                  </div>
-                )}
-
                 {/* Card picker */}
                 {loadingCards ? (
                   <p style={{ fontSize: 12, color: "#aaa" }}>Loading cards...</p>
@@ -760,7 +841,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                         onClick={() => setSelB(p => ({ ...p, cardId: card.id }))}
                       >
                         {X.card(14)}
-                        <span>{card.brand} •••• {card.last4}</span>
+                        <span>{card.brand} \u2022\u2022\u2022\u2022 {card.last4}</span>
                         {card.is_default && <span style={{ fontSize: 10, opacity: 0.7, marginLeft: "auto" }}>default</span>}
                       </button>
                     ))}
@@ -773,21 +854,77 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   </div>
                 )}
 
-                {/* Amount preview */}
-                {selB.cardId && selB.cardId !== "in_person" && (() => {
+                {/* Amount preview — always shown so staff knows what to collect */}
+                {(() => {
+                  const TAX_RATE = 0.07;
+                  const isLes    = (selB.type || "bay") === "lesson";
+                  const noCard   = custCards.length === 0 && !loadingCards;
+
+                  if (isLes) {
+                    if (lessonPkg && lessonPkg.remaining_credits > 0) {
+                      return (
+                        <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>1 lesson credit applied</span>
+                            <span style={{ fontSize: 12, color: "#888" }}>{lessonPkg.remaining_credits} remaining</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
+                            <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: GREEN }}>$0.00</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    const isMem    = !!(selB.custObj?.tier && selB.custObj.tier !== "none");
+                    const lesPrice = isMem ? 120 : 150;
+                    return (
+                      <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                          <span style={{ fontSize: 12, color: "#888" }}>1hr Lesson · {isMem ? "Member rate" : "Non-member rate"}</span>
+                          <span style={{ fontSize: 12, color: "#888" }}>${lesPrice}.00</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700 }}>{noCard ? "Amount to Collect" : "Total"}</span>
+                          <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: noCard ? ORANGE : "#1a1a1a" }}>${lesPrice}.00</span>
+                        </div>
+                        {noCard && <p style={{ fontSize: 11, color: ORANGE, fontWeight: 600 }}>\u26a0 No card on file \u2014 collect ${lesPrice}.00 in person</p>}
+                        <p style={{ fontSize: 11, color: "#aaa" }}>Lessons are not subject to sales tax.</p>
+                      </div>
+                    );
+                  }
+
                   const durSlots = DUR_MAP[selB.dur] || 2;
-                  const hrs = durSlots * 0.5;
-                  const d   = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
-                  const isWk = d.getDay() === 0 || d.getDay() === 6;
-                  const hour  = toH(selB.time || "9:00 AM");
-                  const isPeak = !isWk && hour >= 17;
-                  const rate  = isPeak ? cfg.pk : cfg.op;
-                  const paidHrs = creditInfo ? creditInfo.remain : hrs;
-                  const amount  = paidHrs * rate;
+                  const hrs      = durSlots * 0.5;
+                  const d        = new Date((selB.date || dateKey(resDate)) + "T12:00:00");
+                  const isWk     = d.getDay() === 0 || d.getDay() === 6;
+                  const hour     = toH(selB.time || "9:00 AM");
+                  const isPeak   = !isWk && hour >= 17;
+                  const rate     = isPeak ? cfg.pk : cfg.op;
+                  const paidHrs  = creditInfo ? creditInfo.remain : hrs;
+                  const subtotal = Math.round(paidHrs * rate * 100) / 100;
+                  const taxAmt   = Math.round(subtotal * TAX_RATE * 100) / 100;
+                  const total    = Math.round((subtotal + taxAmt) * 100) / 100;
                   return (
-                    <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(non-peak)"}</span>
-                      <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono }}>${amount.toFixed(2)}</span>
+                    <div style={{ marginTop: 10, borderTop: "1px solid #f0f0ee", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {creditInfo && creditInfo.used > 0 && (
+                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                          <span style={{ fontSize: 12, color: GREEN }}>{creditInfo.used} credit{creditInfo.used !== 1 ? "s" : ""} applied ({creditInfo.avail} available)</span>
+                          <span style={{ fontSize: 12, color: GREEN, fontWeight: 600 }}>{creditInfo.used}hr covered</span>
+                        </div>
+                      )}
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 12, color: "#888" }}>{paidHrs}hr @ ${rate}/hr {isPeak ? "(peak)" : "(off-peak)"}</span>
+                        <span style={{ fontSize: 12, color: "#888" }}>${subtotal.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 12, color: "#888" }}>Tax (7%)</span>
+                        <span style={{ fontSize: 12, color: "#888" }}>${taxAmt.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #f0f0ee", paddingTop: 6, marginTop: 2 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700 }}>{noCard ? "Amount to Collect" : "Total"}</span>
+                        <span style={{ fontSize: 16, fontWeight: 700, fontFamily: mono, color: noCard ? ORANGE : "#1a1a1a" }}>${total.toFixed(2)}</span>
+                      </div>
+                      {noCard && <p style={{ fontSize: 11, color: ORANGE, fontWeight: 600 }}>\u26a0 No card on file \u2014 collect ${total.toFixed(2)} in person</p>}
                     </div>
                   );
                 })()}
@@ -852,7 +989,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                   <button style={{ ...S.b1, flex: 1 }} onClick={saveEdits} disabled={saving}>
                     {saving ? "Saving..." : "Save Changes"}
                   </button>
-                  {/* Refund button — only if payment exists */}
                   {selB.square_payment_id && (
                     <button
                       style={{ ...GS.togBtn, display: "flex", alignItems: "center", gap: 4, padding: "10px 14px" }}
@@ -889,11 +1025,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
               Choose how to refund Bay {refundModal.bay} · {(refundModal.duration_slots || 2) * 0.5}hr
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <button
-                style={{ ...S.b1, background: GREEN }}
-                onClick={() => issueRefund(true)}
-                disabled={saving}
-              >
+              <button style={{ ...S.b1, background: GREEN }} onClick={() => issueRefund(true)} disabled={saving}>
                 {X.refund(14)} Refund as Credits
               </button>
               <button
@@ -901,7 +1033,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                 onClick={() => issueRefund(false)}
                 disabled={!refundModal.square_payment_id || saving}
               >
-                {X.card(14)} Refund to Card — ${(refundModal.amount || 0).toFixed(2)}
+                {X.card(14)} Refund to Card \u2014 ${(refundModal.amount || 0).toFixed(2)}
               </button>
               {!refundModal.square_payment_id && (
                 <p style={{ fontSize: 11, color: "#aaa", textAlign: "center" }}>No card payment found for this booking</p>
@@ -912,9 +1044,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
-    </div>
-  );
-}        </>
+        </>
       )}
 
       {/* ── CHANGES & CANCELLATIONS VIEW ── */}
@@ -922,7 +1052,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <p style={{ fontSize: 13, color: "#888" }}>All changes and cancellations for {fmtFull(resDate)}</p>
-            <button style={{ ...GS.togBtn, fontSize: 11 }} onClick={loadChangeLog}>↻ Refresh</button>
+            <button style={{ ...GS.togBtn, fontSize: 11 }} onClick={loadChangeLog}>\u21bb Refresh</button>
           </div>
           {logLoading ? (
             <p style={{ color: "#aaa", fontSize: 13 }}>Loading...</p>
@@ -939,7 +1069,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: actionColor }}>{row.action}</span>
                         {row.customerName && <span style={{ fontSize: 12, color: "#555" }}>{row.customerName}</span>}
-                        {row.bay && <span style={{ fontSize: 11, color: "#aaa" }}>· Bay {row.bay}</span>}
+                        {row.bay && <span style={{ fontSize: 11, color: "#aaa" }}>\u00b7 Bay {row.bay}</span>}
                       </div>
                       {row.detail && <p style={{ fontSize: 11, color: "#888" }}>{row.detail}</p>}
                     </div>
@@ -952,14 +1082,13 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
-
       {/* ── Booking History Modal ── */}
       {histModal && (
         <div style={S.ov} onClick={() => setHistModal(null)}>
           <div style={{ ...S.mod, maxWidth: 480 }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h3 style={{ fontSize: 16, fontWeight: 700 }}>Booking History</h3>
-              <button style={{ background: "none", border: "none", cursor: "pointer", color: "#888" }} onClick={() => setHistModal(null)}>✕</button>
+              <button style={{ background: "none", border: "none", cursor: "pointer", color: "#888" }} onClick={() => setHistModal(null)}>\u2715</button>
             </div>
             {histLog.length === 0 ? (
               <p style={{ color: "#aaa", fontSize: 13 }}>No history logged for this booking.</p>
@@ -986,3 +1115,6 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         </div>
       )}
 
+    </div>
+  );
+}
