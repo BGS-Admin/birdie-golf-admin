@@ -487,29 +487,37 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     const orig    = bookings.find(b => b.id === selB.id);
     const changes = [];
     if (orig) {
+      if (orig.date !== newDate)                         changes.push(`${orig.date} → ${newDate}`);
       if (orig.bay !== newBay)                           changes.push(`Bay ${orig.bay} → Bay ${newBay}`);
       if (orig.start_time !== newTime)                   changes.push(`${orig.start_time} → ${newTime}`);
       if ((orig.duration_slots || 2) !== durSlots)       changes.push(`${slotsToLabel(orig.duration_slots || 2)} → ${slotsToLabel(durSlots)}`);
       if (orig.status !== selB.status)                   changes.push(`Status: ${orig.status} → ${selB.status}`);
     }
 
-    await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: newBay, start_time: newTime, duration_slots: durSlots, admin_notes: selB.notes || "" });
+    await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: newBay, date: newDate, start_time: newTime, duration_slots: durSlots, admin_notes: selB.notes || "" });
     // Update Google Calendar event if lesson details changed
-    if (selB.type === "lesson" && selB.google_event_id && changes.length > 0) {
+    // Also create event if this lesson never got one (e.g. booked before calendar integration)
+    if (selB.type === "lesson" && changes.length > 0) {
       const calId = coachCalendarId(selB.coach_id);
       if (calId) {
-        await gcal("event.update", {
-          calendarId: calId,
-          eventId:    selB.google_event_id,
-          booking: {
-            bookingId:    selB.id,
-            customerName: cn(selB.custObj) || "Walk-in",
-            date:         newDate,
-            startTime:    newTime,
-            bay:          newBay,
-            coachName:    selB.coach_name || "",
-          },
-        });
+        const gcalBooking = {
+          bookingId:    selB.id,
+          customerName: cn(selB.custObj) || "Walk-in",
+          date:         newDate,
+          startTime:    newTime,
+          bay:          newBay,
+          coachName:    selB.coach_name || "",
+        };
+        if (selB.google_event_id) {
+          // Update existing calendar event
+          await gcal("event.update", { calendarId: calId, eventId: selB.google_event_id, booking: gcalBooking });
+        } else {
+          // No event yet (booked before integration) — create it now
+          const gcalRes = await gcal("event.create", { calendarId: calId, booking: gcalBooking });
+          if (gcalRes?.eventId) {
+            await db.patch("bookings", `id=eq.${selB.id}`, { google_event_id: gcalRes.eventId });
+          }
+        }
       }
     }
 
