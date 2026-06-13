@@ -2,6 +2,7 @@
 // BGS Google Calendar Edge Function
 // Supabase Edge Function: google-calendar
 // Adds/updates/deletes lesson events on Santiago's calendar
+// + sends email notification to coach on each action
 // ═══════════════════════════════════════════════════════════
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -9,6 +10,12 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-bgs-key",
+};
+
+// ── Coach email map ───────────────────────────────────────────────────────────
+const COACH_EMAILS: Record<string, string> = {
+  "TMiznwW3c_E9-NTW": "santiespinosa.golf@gmail.com",
+  "TMa5N23NEiU89Spy": "nicolas@birdiegolfstudios.com", // update when Nicolas is added
 };
 
 // ── Google JWT auth ───────────────────────────────────────────────────────────
@@ -33,7 +40,6 @@ async function getGoogleAccessToken(): Promise<string> {
   const claimB64   = encode(claim);
   const sigInput   = `${headerB64}.${claimB64}`;
 
-  // Import private key
   const pemBody  = credentials.private_key
     .replace("-----BEGIN PRIVATE KEY-----", "")
     .replace("-----END PRIVATE KEY-----", "")
@@ -55,7 +61,6 @@ async function getGoogleAccessToken(): Promise<string> {
 
   const jwt = `${sigInput}.${sigB64}`;
 
-  // Exchange JWT for access token
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -71,7 +76,6 @@ async function getGoogleAccessToken(): Promise<string> {
 
 // ── Calendar helpers ──────────────────────────────────────────────────────────
 
-// Converts a date string (YYYY-MM-DD) + time string (e.g. "10:00 AM") → ISO 8601 in ET
 function toISODateTime(date: string, time: string): string {
   const [t, ap] = time.split(" ");
   let [h, m]    = t.split(":").map(Number);
@@ -79,12 +83,9 @@ function toISODateTime(date: string, time: string): string {
   if (ap === "AM" && h === 12) h = 0;
   const hh = String(h).padStart(2, "0");
   const mm = String(m).padStart(2, "0");
-  // Eastern Time — lessons are always at BGS in Miami (ET = UTC-4 in summer, UTC-5 in winter)
-  // We store as local time with ET offset; Google Calendar will display correctly
   return `${date}T${hh}:${mm}:00`;
 }
 
-// Build the Google Calendar event body
 function buildEvent(params: {
   customerName: string;
   date: string;
@@ -95,7 +96,6 @@ function buildEvent(params: {
 }) {
   const { customerName, date, startTime, bay, bookingId, coachName } = params;
   const start = toISODateTime(date, startTime);
-  // Lessons are always 1 hour
   const [datePart, timePart] = start.split("T");
   const [hh, mm]             = timePart.split(":");
   const endH                 = String(Number(hh) + 1).padStart(2, "0");
@@ -106,12 +106,75 @@ function buildEvent(params: {
     description: `Coach: ${coachName}\nBay: ${bay}\nBooking ID: ${bookingId}\n\nManaged by BGS Booking System`,
     start:       { dateTime: start, timeZone: "America/New_York" },
     end:         { dateTime: end,   timeZone: "America/New_York" },
-    colorId:     "2", // sage green — fits the BGS brand
+    colorId:     "2",
     reminders: {
       useDefault: false,
-      overrides:  [{ method: "popup", minutes: 30 }],
+      overrides: [
+        { method: "email", minutes: 1440 }, // 24hrs before
+        { method: "email", minutes: 60  },  // 1hr before
+        { method: "popup", minutes: 30  },  // popup on phone
+      ],
     },
   };
+}
+
+// ── Format date for email display ─────────────────────────────────────────────
+function fmtDateDisplay(date: string, time: string): string {
+  const d = new Date(date + "T12:00:00");
+  const dateStr = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  return `${dateStr} at ${time}`;
+}
+
+// ── Send coach notification email via Resend ──────────────────────────────────
+async function sendCoachEmail(params: {
+  action: string;
+  coachId: string;
+  booking: {
+    customerName: string;
+    date: string;
+    startTime: string;
+    bay: number;
+    coachName: string;
+    bookingId: string;
+  };
+}) {
+  const RESEND_KEY = Deno.env.get("RESEND_API_KEY");
+  if (!RESEND_KEY) return; // skip if not configured
+
+  const { action, coachId, booking } = params;
+  const coachEmail = COACH_EMAILS[coachId];
+  if (!coachEmail) return;
+
+  const dateDisplay = fmtDateDisplay(booking.date, booking.startTime);
+  const bayDisplay  = `Bay ${booking.bay}`;
+
+  let subject = "";
+  let bodyText = "";
+
+  if (action === "event.create") {
+    subject  = `[BGS] New Lesson — ${booking.customerName} · ${dateDisplay}`;
+    bodyText = `Hi ${booking.coachName.split(" ")[0]},\n\nYou have a new lesson booked:\n\nCustomer: ${booking.customerName}\nDate & Time: ${dateDisplay}\nBay: ${bayDisplay}\n\nThis has been added to your Google Calendar.\n\n— Birdie Golf Studios`;
+  } else if (action === "event.update") {
+    subject  = `[BGS] Lesson Updated — ${booking.customerName} · ${dateDisplay}`;
+    bodyText = `Hi ${booking.coachName.split(" ")[0]},\n\nA lesson has been updated:\n\nCustomer: ${booking.customerName}\nNew Date & Time: ${dateDisplay}\nBay: ${bayDisplay}\n\nYour Google Calendar has been updated.\n\n— Birdie Golf Studios`;
+  } else if (action === "event.delete") {
+    subject  = `[BGS] Lesson Cancelled — ${booking.customerName} · ${dateDisplay}`;
+    bodyText = `Hi ${booking.coachName.split(" ")[0]},\n\nA lesson has been cancelled:\n\nCustomer: ${booking.customerName}\nDate & Time: ${dateDisplay}\nBay: ${bayDisplay}\n\nThis has been removed from your Google Calendar.\n\n— Birdie Golf Studios`;
+  }
+
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${RESEND_KEY}`,
+      "Content-Type":  "application/json",
+    },
+    body: JSON.stringify({
+      from:    "Birdie Golf Studios <info@birdiegolfstudios.com>",
+      to:      [coachEmail],
+      subject,
+      text:    bodyText,
+    }),
+  });
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
@@ -120,21 +183,18 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    // Auth check
     const bgsKey = req.headers.get("x-bgs-key");
     if (bgsKey !== Deno.env.get("BGS_API_SECRET")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: CORS });
     }
 
     const body   = await req.json();
-    const { action, calendarId, eventId, booking } = body;
-    // calendarId — the coach's Google Calendar ID
-    // booking    — { bookingId, customerName, date, startTime, bay, coachName }
+    const { action, calendarId, eventId, booking, coachId } = body;
 
-    const token    = await getGoogleAccessToken();
-    const calId    = encodeURIComponent(calendarId);
-    const baseUrl  = `https://www.googleapis.com/calendar/v3/calendars/${calId}/events`;
-    const authHdr  = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
+    const token   = await getGoogleAccessToken();
+    const calId   = encodeURIComponent(calendarId);
+    const baseUrl = `https://www.googleapis.com/calendar/v3/calendars/${calId}/events`;
+    const authHdr = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
     // ── Create event ──────────────────────────────────────────────────────────
     if (action === "event.create") {
@@ -146,6 +206,10 @@ serve(async (req) => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error("Calendar create failed: " + JSON.stringify(data));
+
+      // Send coach email (fire and forget)
+      sendCoachEmail({ action, coachId, booking }).catch(console.error);
+
       return new Response(JSON.stringify({ ok: true, eventId: data.id }), { headers: CORS });
     }
 
@@ -160,6 +224,9 @@ serve(async (req) => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error("Calendar update failed: " + JSON.stringify(data));
+
+      sendCoachEmail({ action, coachId, booking }).catch(console.error);
+
       return new Response(JSON.stringify({ ok: true, eventId: data.id }), { headers: CORS });
     }
 
@@ -174,6 +241,10 @@ serve(async (req) => {
         const data = await res.json().catch(() => ({}));
         throw new Error("Calendar delete failed: " + JSON.stringify(data));
       }
+
+      // For delete, booking details are passed in so we can still email
+      if (booking) sendCoachEmail({ action, coachId, booking }).catch(console.error);
+
       return new Response(JSON.stringify({ ok: true }), { headers: CORS });
     }
 

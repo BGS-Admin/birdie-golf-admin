@@ -391,6 +391,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       if (calId) {
         const gcalRes = await gcal("event.create", {
           calendarId: calId,
+          coachId:    resolvedCoachId || selB.coach_id,
           booking: {
             bookingId:    newBookingId,
             customerName: cn(custObj) || "Walk-in",
@@ -535,10 +536,10 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         };
         if (selB.google_event_id) {
           // Update existing calendar event
-          await gcal("event.update", { calendarId: calId, eventId: selB.google_event_id, booking: gcalBooking });
+          await gcal("event.update", { calendarId: calId, eventId: selB.google_event_id, coachId: resolvedCoachId, booking: gcalBooking });
         } else {
           // No event yet (booked before integration) — create it now
-          const gcalRes = await gcal("event.create", { calendarId: calId, booking: gcalBooking });
+          const gcalRes = await gcal("event.create", { calendarId: calId, coachId: resolvedCoachId, booking: gcalBooking });
           if (gcalRes?.eventId) {
             await db.patch("bookings", `id=eq.${selB.id}`, { google_event_id: gcalRes.eventId });
           }
@@ -627,7 +628,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
           : null);
       const calId = coachCalendarId(resolvedCoachId);
       if (calId) {
-        await gcal("event.delete", { calendarId: calId, eventId: bk.google_event_id });
+        await gcal("event.delete", { calendarId: calId, eventId: bk.google_event_id, coachId: resolvedCoachId, booking: { customerName: cn(cust) || "Walk-in", date: bk.date, startTime: bk.start_time || bk.time, bay: bk.bay, coachName: bk.coach_name || "", bookingId: bk.id } });
       }
     }
 
