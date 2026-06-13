@@ -450,12 +450,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         date:              fmtDateStr,
         time:              bookingTime,
         bay:               "Bay " + (selB.bay || 1),
-        // Amount due — matches booking app logic
-        amount_due:        isLesson
+        // "Total" field — amount due
+        total:             isLesson
                              ? (hasLessonPkg ? "Package Credit" : "$" + (isMember ? "120" : "150") + ".00")
                              : (amount > 0 ? "$" + amount.toFixed(2) : "To be collected"),
-        // Payment status
-        payment_status:    hasLessonPkg
+        // "Payment" field — status
+        payment_method:    hasLessonPkg
                              ? "Package Credit"
                              : selB.cardId === "in_person"
                                ? "Pay in Person"
@@ -518,7 +518,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     // Update Google Calendar event if lesson details changed
     // Also create event if this lesson never got one (e.g. booked before calendar integration)
     if (selB.type === "lesson" && changes.length > 0) {
-      const calId = coachCalendarId(selB.coach_id);
+      // Fall back to name-based lookup for old bookings that have no coach_id
+      const resolvedCoachId = selB.coach_id
+        || (selB.coach_name?.includes("Espinosa") ? "TMiznwW3c_E9-NTW"
+          : selB.coach_name?.includes("Cavero")   ? "TMa5N23NEiU89Spy"
+          : null);
+      const calId = coachCalendarId(resolvedCoachId);
       if (calId) {
         const gcalBooking = {
           bookingId:    selB.id,
@@ -616,7 +621,11 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
 
     // Delete Google Calendar event if this was a lesson
     if (bk.type === "lesson" && bk.google_event_id) {
-      const calId = coachCalendarId(bk.coach_id);
+      const resolvedCoachId = bk.coach_id
+        || (bk.coach_name?.includes("Espinosa") ? "TMiznwW3c_E9-NTW"
+          : bk.coach_name?.includes("Cavero")   ? "TMa5N23NEiU89Spy"
+          : null);
+      const calId = coachCalendarId(resolvedCoachId);
       if (calId) {
         await gcal("event.delete", { calendarId: calId, eventId: bk.google_event_id });
       }
