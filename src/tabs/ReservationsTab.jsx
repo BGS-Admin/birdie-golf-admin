@@ -517,7 +517,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: newBay, date: newDate, start_time: newTime, duration_slots: durSlots, admin_notes: selB.notes || "" });
     // Update Google Calendar event if lesson details changed
     // Also create event if this lesson never got one (e.g. booked before calendar integration)
-    if (selB.type === "lesson" && changes.length > 0) {
+    if (selB.type === "lesson") {
       // Fall back to name-based lookup for old bookings that have no coach_id
       const resolvedCoachId = selB.coach_id
         || (selB.coach_name?.includes("Espinosa") ? "TMiznwW3c_E9-NTW"
