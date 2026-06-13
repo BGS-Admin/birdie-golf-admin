@@ -263,6 +263,27 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       return;
     }
 
+    // ── Coach conflict check (lessons only) ───────────────────────────────────
+    if (selB.type === "lesson" && selB.coach_id) {
+      const lessonStart = newStart;
+      const lessonEnd   = lessonStart + 1; // always 1 hour
+      const coachConflict = bookings.find(b => {
+        if (b.status === "cancelled" || b.type !== "lesson" || b.date !== bookingDate) return false;
+        const coachMatch = b.coach_id === selB.coach_id ||
+          (selB.coach_id === "TMiznwW3c_E9-NTW" && (b.coach_name || "").includes("Espinosa")) ||
+          (selB.coach_id === "TMa5N23NEiU89Spy" && (b.coach_name || "").includes("Cavero"));
+        if (!coachMatch) return false;
+        const bs = toH(b.start_time), be = bs + (b.duration_slots || 2) * 0.5;
+        return lessonStart < be && lessonEnd > bs;
+      });
+      if (coachConflict) {
+        const cc = customers.find(c => c.id === coachConflict.customer_id);
+        fire(`${selB.coach_name?.split(" ")[0] || "Coach"} already has a lesson at ${coachConflict.start_time}${cc ? " · " + cn(cc) : ""}. Choose a different time.`);
+        setSaving(false);
+        return;
+      }
+    }
+
     // ── Charge via Square catalog actions (matches booking app) ───────────────
     let sqPaymentId = null;
     const sqCard = custCards.find(c => c.id === selB.cardId);
