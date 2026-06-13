@@ -435,19 +435,39 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     // Confirmation email
     if (custObj?.email) {
       const fmtDateStr = new Date(bookingDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+      const isLesson   = selB.type === "lesson";
+      const isMember   = !!(custObj?.tier && custObj.tier !== "none");
+
+      // Lesson package credits remaining after this booking
+      const pkgCreditsAfter = hasLessonPkg && lessonPkg
+        ? Math.max(0, lessonPkg.remaining_credits - 1)
+        : null;
+
       await sq("email.send", {
-        customer_name:  cn(custObj) || custObj.first_name,
-        customer_email: custObj.email,
-        date:           fmtDateStr,
-        time:           bookingTime,
-        duration:       `${durSlots * 0.5}hr`,
-        bay:            "Bay " + (selB.bay || 1),
-        total:          amount > 0 ? "$" + amount.toFixed(2) : (selB.cardId === "in_person" ? "Pay in person" : "To be collected"),
-        credits_used:   hasLessonPkg ? "1 lesson credit" : (creditsUsed > 0 ? `${creditsUsed}hr credit${creditsUsed !== 1 ? "s" : ""}` : null),
-        not_paid:       !sqPaymentId && !hasLessonPkg && !(creditsUsed > 0 && amount === 0),
-        type:           selB.type === "lesson" ? "lesson_booking" : "bay_booking",
-        coach:          selB.coach_name || undefined,
-        send_admin:     true,
+        customer_name:     cn(custObj) || custObj.first_name,
+        customer_email:    custObj.email,
+        coach:             isLesson ? (selB.coach_name || undefined) : undefined,
+        date:              fmtDateStr,
+        time:              bookingTime,
+        bay:               "Bay " + (selB.bay || 1),
+        // Amount due — matches booking app logic
+        amount_due:        isLesson
+                             ? (hasLessonPkg ? "Package Credit" : "$" + (isMember ? "120" : "150") + ".00")
+                             : (amount > 0 ? "$" + amount.toFixed(2) : "To be collected"),
+        // Payment status
+        payment_status:    hasLessonPkg
+                             ? "Package Credit"
+                             : selB.cardId === "in_person"
+                               ? "Pay in Person"
+                               : sqPaymentId
+                                 ? "Paid"
+                                 : "To be collected",
+        // Credits remaining — lesson packages only
+        credits_remaining: pkgCreditsAfter !== null
+                             ? `Remaining package credits after this lesson: ${pkgCreditsAfter}`
+                             : null,
+        type:              isLesson ? "lesson_booking" : "bay_booking",
+        send_admin:        true,
       });
     }
 
