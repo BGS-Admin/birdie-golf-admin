@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from "react";
 import { db } from "../lib/db.js";
 import { sq } from "../lib/square.js";
+import { gcal, coachCalendarId } from "../lib/gcal.js";
 import {
   GREEN, PURPLE, RED, ORANGE, mono, ff,
   TC, TB, BK_C, SLOTS, DUR_MAP, DUR_LABELS, slotsToLabel,
@@ -384,6 +385,27 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
 
     const newBookingId = Array.isArray(newBookingRows) ? newBookingRows[0]?.id : newBookingRows?.id;
 
+    // Google Calendar — create event for Santiago's lessons
+    if (selB.type === "lesson" && newBookingId) {
+      const calId = coachCalendarId(selB.coach_id);
+      if (calId) {
+        const gcalRes = await gcal("event.create", {
+          calendarId: calId,
+          booking: {
+            bookingId:    newBookingId,
+            customerName: cn(custObj) || "Walk-in",
+            date:         bookingDate,
+            startTime:    bookingTime,
+            bay:          selB.bay || 1,
+            coachName:    selB.coach_name || "",
+          },
+        });
+        if (gcalRes?.eventId) {
+          await db.patch("bookings", `id=eq.${newBookingId}`, { google_event_id: gcalRes.eventId });
+        }
+      }
+    }
+
     // Deduct bay credits (Player only — EB/Champion have unlimited)
     if (!creditInfo?.isEB && !creditInfo?.isChampion && creditsUsed > 0 && custObj?.id) {
       await db.patch("customers", `id=eq.${custObj.id}`, { bay_credits_remaining: Math.max(0, (custObj.bay_credits_remaining || 0) - creditsUsed) });
@@ -472,6 +494,25 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     }
 
     await db.patch("bookings", `id=eq.${selB.id}`, { status: selB.status, bay: newBay, start_time: newTime, duration_slots: durSlots, admin_notes: selB.notes || "" });
+    // Update Google Calendar event if lesson details changed
+    if (selB.type === "lesson" && selB.google_event_id && changes.length > 0) {
+      const calId = coachCalendarId(selB.coach_id);
+      if (calId) {
+        await gcal("event.update", {
+          calendarId: calId,
+          eventId:    selB.google_event_id,
+          booking: {
+            bookingId:    selB.id,
+            customerName: cn(selB.custObj) || "Walk-in",
+            date:         newDate,
+            startTime:    newTime,
+            bay:          newBay,
+            coachName:    selB.coach_name || "",
+          },
+        });
+      }
+    }
+
     await logBkChange(selB.id, "Updated", `${cn(selB.custObj) || "Walk-in"} · ${changes.length ? changes.join(", ") : "Saved"}`);
     fire("Booking updated ✓");
     setSaving(false);
@@ -543,6 +584,14 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
       };
       await sq("email.send", { type: "cancellation", ...emailPayload });
       await sq("email.send", { type: "cancellation", ...emailPayload, customer_email: "info@birdiegolfstudios.com", customer_name: "Staff" });
+    }
+
+    // Delete Google Calendar event if this was a lesson
+    if (bk.type === "lesson" && bk.google_event_id) {
+      const calId = coachCalendarId(bk.coach_id);
+      if (calId) {
+        await gcal("event.delete", { calendarId: calId, eventId: bk.google_event_id });
+      }
     }
 
     await logBkChange(bk.id, "Cancelled", `${cn(cust) || "Walk-in"} · Bay ${bk.bay} · ${bk.start_time || bk.time} · ${refundDesc}`);
