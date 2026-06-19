@@ -248,8 +248,12 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
   const adjustCredits = async (cust, delta) => {
     const cur  = cust.bay_credits_remaining || 0;
     const max  = cust.bay_credits_total || 8;
-    const next = Math.min(max, Math.max(0, Math.round((cur + delta) * 10) / 10));
+    const next = Math.max(0, Math.round((cur + delta) * 10) / 10);
     if (next === cur) return;
+    if (next > max) {
+      const ok = window.confirm(`This will set ${cn(cust)}'s credits to ${next} hrs, which is above their normal ${max} hr allowance. Continue?`);
+      if (!ok) return;
+    }
     await db.patch("customers", `id=eq.${cust.id}`, { bay_credits_remaining: next });
     await db.post("transactions", {
       customer_id:   cust.id,
@@ -729,33 +733,49 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
         const c = creditModal.cust;
         const cur = c.bay_credits_remaining || 0;
         const max = c.bay_credits_total || 8;
-        const deltas = [-2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2];
+        const delta = creditModal.delta ?? 0;
+        const next = Math.max(0, Math.round((cur + delta) * 10) / 10);
+        const setDelta = (d) => setCreditModal(p => ({ ...p, delta: Math.round(d * 10) / 10 }));
         return (
           <div style={S.ov} onClick={() => setCreditModal(null)}>
             <div style={{ ...S.mod, maxWidth: 360 }} onClick={e => e.stopPropagation()}>
               <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Adjust Credits</h3>
               <p style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>{cn(c)} · {cur}/{max} hrs remaining</p>
-              <label style={{ fontSize: 11, fontWeight: 700, color: "#888", letterSpacing: 1, marginBottom: 8, display: "block" }}>SELECT ADJUSTMENT</label>
-              <select
-                style={{ width: "100%", padding: "10px 12px", border: "1px solid #e8e8e6", borderRadius: 10, fontSize: 14, fontFamily: ff, color: "#1a1a1a", background: "#fff", marginBottom: 16 }}
-                defaultValue=""
-                onChange={async e => {
-                  const delta = Number(e.target.value);
-                  if (!delta) return;
+              <label style={{ fontSize: 11, fontWeight: 700, color: "#888", letterSpacing: 1, marginBottom: 8, display: "block" }}>ADJUSTMENT (HRS)</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <button
+                  style={{ ...GS.togBtn, width: 40, padding: "10px 0" }}
+                  onClick={() => setDelta(delta - 0.5)}
+                >−</button>
+                <input
+                  type="number"
+                  step={0.5}
+                  value={delta}
+                  onChange={e => {
+                    const raw = Number(e.target.value);
+                    if (Number.isNaN(raw)) return;
+                    setDelta(raw);
+                  }}
+                  onBlur={e => setDelta(Math.round(Number(e.target.value || 0) * 2) / 2)}
+                  style={{ flex: 1, textAlign: "center", padding: "10px 12px", border: "1px solid #e8e8e6", borderRadius: 10, fontSize: 14, fontFamily: ff, color: "#1a1a1a", background: "#fff" }}
+                />
+                <button
+                  style={{ ...GS.togBtn, width: 40, padding: "10px 0" }}
+                  onClick={() => setDelta(delta + 0.5)}
+                >+</button>
+              </div>
+              <p style={{ fontSize: 12, color: next > max ? RED : "#888", marginBottom: 16 }}>
+                {delta > 0 ? "+" : ""}{delta} hr{Math.abs(delta) !== 1 ? "s" : ""} → <strong>{next}</strong> remaining
+                {next > max ? " (above normal allowance)" : ""}
+              </p>
+              <button
+                style={{ ...GS.togBtn, width: "100%", marginBottom: 8, opacity: delta === 0 ? 0.5 : 1 }}
+                disabled={delta === 0}
+                onClick={async () => {
                   await adjustCredits(c, delta);
                   setCreditModal(null);
                 }}
-              >
-                <option value="" disabled>Choose amount...</option>
-                {deltas.filter(d => {
-                  const next = Math.round((cur + d) * 10) / 10;
-                  return next >= 0 && next <= max;
-                }).map(d => (
-                  <option key={d} value={d}>
-                    {d > 0 ? "+" : ""}{d} hr{Math.abs(d) !== 1 ? "s" : ""} → {Math.round((cur + d) * 10) / 10} remaining
-                  </option>
-                ))}
-              </select>
+              >Apply</button>
               <button style={{ ...GS.togBtn, width: "100%" }} onClick={() => setCreditModal(null)}>Cancel</button>
             </div>
           </div>
