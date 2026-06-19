@@ -229,9 +229,38 @@ export default function LessonsTab({ customers }) {
 
     let sqPaymentId = null;
     const sqCard = sellCards.find(c => c.id === sellCardId);
-    if (sqCard?.square_card_id && sellCust.square_customer_id && sellCardId !== "in_person") {
+    const wantsCharge = sellCardId && sellCardId !== "in_person";
+
+    // If a card is selected but the customer record has no square_customer_id yet,
+    // resolve it now instead of silently skipping the charge below.
+    let activeSqCustomerId = sellCust.square_customer_id || null;
+    if (wantsCharge && !activeSqCustomerId) {
+      const sqSearch = await sq("customer.search", { supabase_id: sellCust.id });
+      let foundId = sqSearch?.customers?.[0]?.id || null;
+      if (!foundId) {
+        const created = await sq("customer.create", {
+          first_name: sellCust.first_name || "",
+          last_name:  sellCust.last_name || "",
+          phone:      (sellCust.phone || "").replace(/\D/g, ""),
+          email:      sellCust.email || "",
+          supabase_id: sellCust.id,
+        });
+        foundId = created?.customer?.id || null;
+      }
+      if (foundId) {
+        await db.patch("customers", `id=eq.${sellCust.id}`, { square_customer_id: foundId });
+        activeSqCustomerId = foundId;
+      }
+    }
+    if (wantsCharge && !activeSqCustomerId) {
+      setSellSaving(false);
+      alert("Could not link this customer to Square. Please contact support before charging.");
+      return;
+    }
+
+    if (wantsCharge && activeSqCustomerId && sqCard?.square_card_id) {
       const chargeRes = await sq("lesson.purchase", {
-        square_customer_id: sellCust.square_customer_id,
+        square_customer_id: activeSqCustomerId,
         card_id:            sqCard.square_card_id,
         coach_id:           sellCoach,
         hours:              sellPkg.credits,
@@ -239,7 +268,13 @@ export default function LessonsTab({ customers }) {
         source_name:        "BGS Admin App",
       });
       sqPaymentId = chargeRes?.payment?.id || null;
-      if (!sqPaymentId) { alert("Payment failed. Please try again."); setSellSaving(false); return; }
+      if (chargeRes?.error || !sqPaymentId) { alert("Payment failed. Please try again."); setSellSaving(false); return; }
+    } else if (wantsCharge && activeSqCustomerId && !sqCard?.square_card_id) {
+      // Card was selected but its Square card_id couldn't be resolved — fail loudly
+      // rather than silently confirming an unpaid package sale.
+      setSellSaving(false);
+      alert("Could not load that card. Please re-select a payment method and try again.");
+      return;
     }
 
     const coachObj  = COACHES.find(c => c.id === sellCoach);

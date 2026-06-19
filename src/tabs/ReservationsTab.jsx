@@ -238,6 +238,10 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         if (sqId) {
           await db.patch("customers", `id=eq.${custId}`, { square_customer_id: sqId });
           custObj = { ...custObj, square_customer_id: sqId };
+        } else {
+          // Not fatal here — the charge step below will retry resolving the Square
+          // customer ID before attempting any payment.
+          console.error("[ReservationsTab] Square customer.create failed for walk-in", custId, sqResult);
         }
       }
     }
@@ -287,14 +291,44 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
     // ── Charge via Square catalog actions (matches booking app) ───────────────
     let sqPaymentId = null;
     const sqCard = custCards.find(c => c.id === selB.cardId);
+    const wantsCharge = selB.cardId && selB.cardId !== "in_person";
 
-    if (selB.cardId && selB.cardId !== "in_person" && custObj?.square_customer_id && sqCard?.square_card_id) {
+    // If staff selected a card but the customer record has no square_customer_id yet
+    // (e.g. just created, or never synced), resolve it now instead of silently
+    // skipping the charge below.
+    let activeSqCustomerId = custObj?.square_customer_id || null;
+    if (wantsCharge && !activeSqCustomerId && custId) {
+      const sqSearch = await sq("customer.search", { supabase_id: custId });
+      let foundId = sqSearch?.customers?.[0]?.id || null;
+      if (!foundId) {
+        const created = await sq("customer.create", {
+          first_name: custObj?.first_name || info.firstName || "",
+          last_name:  custObj?.last_name || info.lastName || "",
+          phone:      (custObj?.phone || info.phone || "").replace(/\D/g, ""),
+          email:      custObj?.email || info.email || "",
+          supabase_id: custId,
+        });
+        foundId = created?.customer?.id || null;
+      }
+      if (foundId) {
+        await db.patch("customers", `id=eq.${custId}`, { square_customer_id: foundId });
+        activeSqCustomerId = foundId;
+        custObj = { ...custObj, square_customer_id: foundId };
+      }
+    }
+    if (wantsCharge && !activeSqCustomerId) {
+      fire("Could not link this customer to Square. Please contact support before charging.");
+      setSaving(false);
+      return;
+    }
+
+    if (wantsCharge && activeSqCustomerId && sqCard?.square_card_id) {
       if (selB.type === "lesson") {
         if (!hasLessonPkg) {
           // Use lesson.purchase catalog action — matches booking app path, accrues loyalty
           const isMem = !!(custObj?.tier && custObj.tier !== "none");
           const chargeRes = await sq("lesson.purchase", {
-            square_customer_id: custObj.square_customer_id,
+            square_customer_id: activeSqCustomerId,
             card_id:            sqCard.square_card_id,
             coach_id:           selB.coach_id || selB.coach_name,
             hours:              1,
@@ -310,7 +344,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         } else {
           // $0 credit lesson — create tracking order
           const orderRes = await sq("order.create", {
-            square_customer_id: custObj.square_customer_id,
+            square_customer_id: activeSqCustomerId,
             apply_tax: false,
             source_name: "BGS Admin App",
             line_items: [{
@@ -336,7 +370,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
 
         if (paidSlots > 0) {
           const chargeRes = await sq("bay.charge", {
-            square_customer_id: custObj.square_customer_id,
+            square_customer_id: activeSqCustomerId,
             card_id:            sqCard.square_card_id,
             slots:              paidSlots,
             is_peak:            isPeak,
@@ -353,7 +387,7 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
         } else {
           // $0 booking (full credit coverage) — tracking order only
           const orderRes = await sq("bay.charge", {
-            square_customer_id: custObj.square_customer_id,
+            square_customer_id: activeSqCustomerId,
             card_id:            null,
             slots:              durSlots,
             is_peak:            isPeak,
@@ -365,6 +399,12 @@ export default function ReservationsTab({ customers, bookings, bayBlocks, cfg, h
           sqPaymentId = orderRes?.order?.id || null;
         }
       }
+    } else if (wantsCharge && activeSqCustomerId && !sqCard?.square_card_id) {
+      // Card was selected but its Square card_id couldn't be resolved — fail loudly
+      // rather than silently confirming an unpaid booking.
+      fire("Could not load that card. Please re-select a payment method and try again.");
+      setSaving(false);
+      return;
     }
 
     // Recalculate actual amount charged (for transaction record)

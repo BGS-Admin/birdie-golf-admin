@@ -7,7 +7,16 @@ export const sq = async (action, p = {}) => {
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SB_KEY}`, "x-bgs-key": "bgs-app-2026-x9k3m7p" },
       body: JSON.stringify({ action, ...p })
     });
-    return r.ok ? await r.json() : null;
-  } catch { return null; }
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      console.error(`[square] ${action} failed: HTTP ${r.status}`, body);
+      return null;
+    }
+    return await r.json();
+  } catch (e) {
+    console.error(`[square] ${action} threw`, e);
+    return null;
+  }
 };
 // Wed Jun 10 12:50:34 EDT 2026
+
