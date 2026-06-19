@@ -54,7 +54,13 @@ export default function MembersTab({ customers, fire, reload, logActivity }) {
           supabase_id: custId,
         });
         const sqId = sqResult?.customer?.id;
-        if (sqId) await db.patch("customers", `id=eq.${custId}`, { square_customer_id: sqId });
+        if (sqId) {
+          await db.patch("customers", `id=eq.${custId}`, { square_customer_id: sqId });
+        } else {
+          // Not fatal — this tab never charges Square. Downstream booking/charge flows
+          // will resolve square_customer_id on the fly if it's still missing.
+          console.error("[MembersTab] Square customer.create failed for new member", custId, sqResult);
+        }
       }
     }
 
